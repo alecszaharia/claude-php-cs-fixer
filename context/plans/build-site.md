@@ -1,6 +1,6 @@
 ---
 created: "2026-09-15T14:00:00Z"
-last_edited: "2026-09-15T14:00:00Z"
+last_edited: "2026-09-15T14:40:00Z"
 ---
 # Build Site
 
@@ -128,15 +128,15 @@ Create the executable runner script (`#!/usr/bin/env bash`, `set -u`; do **not**
 **Covers criteria:** R1.1, R1.2, R1.3, R1.4, R2.2, R2.3, R2.4, R3.1, R3.2, R3.3, R3.4
 **blockedBy:** T-001, T-002
 **Effort:** M
-**Files:** `bin/php-cs-fixer-docker`, `lib/summarize.php` (created empty/passthrough here, filled in T-009)
+**Files:** `bin/php-cs-fixer-docker`
 **Description:**
 Implement `run_fixer()`, the single place that starts a container.
 - One image constant at the top of the runner and nowhere else: `IMAGE="ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5"`. Explicit tag, never `latest`. `grep -c 'ghcr.io/php-cs-fixer' bin/php-cs-fixer-docker` must be 1.
 - Mount fidelity: `-v "$P:$P" -w "$P"` — identical absolute path inside and outside, so `__DIR__`, `vendor/autoload.php` and every path in php-cs-fixer's output are host-valid without rewriting.
-- Read-only sidecar mounts at a fixed container path outside `P`: `-v "$RUNNER_ROOT/config/default.php-cs-fixer.php:/cavekit/default.php-cs-fixer.php:ro"` and `-v "$RUNNER_ROOT/lib/summarize.php:/cavekit/summarize.php:ro"`, where `RUNNER_ROOT` is derived from `${BASH_SOURCE[0]}` (`cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P`) so the runner works from any cwd and from the installed plugin directory.
+- Read-only sidecar mount at a fixed container path outside `P`: `-v "$RUNNER_ROOT/config/default.php-cs-fixer.php:/cavekit/default.php-cs-fixer.php:ro"`, where `RUNNER_ROOT` is derived from `${BASH_SOURCE[0]}` (`cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P`) so the runner works from any cwd and from the installed plugin directory.
 - Ownership: on `uname -s` = `Linux`, add `--user "$(id -u):$(id -g)"`; on `Darwin`, add nothing (Docker Desktop's default mapping already preserves ownership). Any other `uname` → treat as Linux-style only if `id -u` works, otherwise tool error.
 - Always `--rm`, `-i` only if needed, never `-t` (no TTY — output must be parseable and prompt-free), and `-e HOME=/tmp` so php-cs-fixer never tries to write into a non-existent home for the mapped uid.
-- Override the entrypoint to a shell now, not later: `--entrypoint sh <image> -c '<script>'`. The inner script runs php-cs-fixer, captures its status into a variable, then (from T-009) feeds its JSON output to `php /cavekit/summarize.php`, and finally `exit "$status"`. Establishing this shape here avoids reworking the invocation in T-009. The builder must discover the real php-cs-fixer binary path inside the image with `docker inspect --format '{{json .Config.Entrypoint}}' "$IMAGE"` and store it as a second constant (`FIXER_BIN`).
+- Use the image's default entrypoint (php-cs-fixer itself); pass `fix ...` as the command. Do not override the entrypoint. Capture container stdout+stderr to a host temp file (`mktemp`) and the exit status separately; T-009 parses that file on the host. No PHP code lives in this repo other than the bundled config.
 **Verification the builder must run (Linux host, no host php):**
 - `command -v php composer php-cs-fixer` returns nothing, yet a smoke run against a throwaway PHP file both in dry-run and rewrite mode completes.
 - Run twice, assert the resolved image reference is byte-identical (echo it behind a debug flag or assert via `grep`).
@@ -249,21 +249,23 @@ Implement the two operations on top of `run_fixer()`.
 **Covers criteria:** R9.1, R9.2, R9.3, R9.4, R9.5, R2.4, R4.4, R7.6
 **blockedBy:** T-008
 **Effort:** M
-**Files:** `lib/summarize.php`, `bin/php-cs-fixer-docker`
+**Files:** `bin/php-cs-fixer-docker`
 **Description:**
-Produce the fixed-shape summary. Counting must be deterministic, so parse php-cs-fixer's structured output, not its human text.
-- Inside the container (the `--entrypoint sh -c` script from T-004): run php-cs-fixer with `--format=json` (plus `--diff` for check), redirect stdout to a temp file inside the container (`out=$(mktemp)`; do **not** pipe — the container shell is POSIX `sh` with no reliable `PIPESTATUS`/`pipefail`), capture `status=$?`, then `php /cavekit/summarize.php "$out" "<config-label>" "<op>"`, then `exit "$status"`. This keeps a single container run, needs no host `jq`/`python`, and preserves the tool status.
-- `lib/summarize.php` reads the JSON (`files[].name`, `files[].appliedFixers`, `files[].diff`) and emits, in this order and with these exact labels, one per line:
+Produce the fixed-shape summary by parsing php-cs-fixer's text output on the host with awk/sed only (bash + coreutils; no jq, python, or php on the host). Lead decision (2026-09-15): the earlier `lib/summarize.php`-inside-the-container design is dropped as over-engineered; one container run, one language.
+- Run php-cs-fixer in text mode (`fix` or `fix --dry-run --diff`), capturing stdout+stderr into a host temp file and the exit status separately (see T-004).
+- Parse (formats verified against the pinned image in `context/refs/runtime-probe.md`):
+  - counts: the line matching `^(Found|Fixed) ([0-9]+) of ([0-9]+) files` → `files_changed` = first number, `files_processed` = second number.
+  - affected files: lines matching `^ +[0-9]+\) (.+)$` → the path; make it absolute by prefixing `$P/` when relative.
+  - diff (check only): everything between each `---------- begin diff ----------` and `----------- end diff -----------` marker, concatenated in order.
+- Emit, in this order and with these exact labels, one per line:
   ```
   config: <label from T-005>
   files_processed: <N>
   files_changed: <N>        # label stays `files_changed:` for both ops; check means "would change"
   ```
-  then the affected paths, one absolute host path per line (they are already host-valid because of the identical-path mount), then for `check` only the delimiter line `--- diff ---` followed by the concatenated diffs.
-- `files_processed` is the size of the scope the runner passed in (php-cs-fixer's JSON reports only touched files), so the runner must hand the scope count to the summarizer as an argument; `files_changed` is the count of JSON `files[]` entries.
-- Zero case: emit the same three labelled lines with `0`, no file list, and for `check` no `--- diff ---` section. The R7.6 empty-scope path never starts a container, so the runner itself must print the identical three-line zero summary in bash — extract those literals into one place used by both the bash and PHP sides, or have the bash path print a hardcoded copy with a comment pointing at `summarize.php` as the authority.
-- Fallback the builder must check first: confirm against the pinned image that the JSON reporter includes `diff` when `--diff` is passed. If it does not, switch to `--format=txt --diff` and parse the numbered `   1) path` lines instead — pick one and note the decision in a comment; do not implement both paths.
-- Preflight failures emit only their one-line cause: never call the summarizer from an error path.
+  then the affected paths one absolute host path per line, then for `check` only the delimiter line `--- diff ---` followed by the concatenated diffs. Everything else from php-cs-fixer (banner, progress bar, "Loaded config", composer.json warning) is dropped from the summary; on a tool error (status class 2) the raw captured output is printed verbatim instead (R5.2) and no summary is produced.
+- Zero case: the same three labelled lines with `0`, no file list, no `--- diff ---`. The R7.6 empty-scope path never starts a container and prints the identical zero summary from the same bash function.
+- Preflight failures emit only their one-line cause: never call the summary function from an error path.
 **Verification the builder must run:** check with violations → three labelled lines, file list, exactly one `--- diff ---` line, diff after it, status 1; splitting the output on that delimiter yields summary and diff with no parsing of diff internals. Fix run → labelled lines and changed list, no delimiter. Clean run → zeros, no file list, no delimiter, status 0. Empty git working set with no path → identical zero summary, status 0. Every path printed is openable on the host (`while read -r p; do [ -e "$p" ]; done`). Preflight failure → one line only, no labels.
 **Done when:**
 - Every run reaching php-cs-fixer ends with fixed-label lines carrying processed and changed/violating counts.
