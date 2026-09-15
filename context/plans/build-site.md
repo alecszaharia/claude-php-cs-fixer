@@ -6,7 +6,7 @@ last_edited: "2026-09-15T14:40:00Z"
 
 14 tasks across 10 tiers from 2 kits.
 
-Target stack: POSIX-ish bash runner + Docker (`ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5`) + Claude Code plugin (`.claude-plugin/` manifest, marketplace-in-repo, `commands/`, `skills/`). No host PHP/composer — every PHP execution, including the output summarizer, happens inside the pinned image.
+Target stack: POSIX-ish bash runner + Docker (`ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5`) + Claude Code plugin (`.claude-plugin/` manifest, marketplace-in-repo, `commands/`, `skills/`). No host PHP/composer — every PHP execution happens inside the pinned image; output parsing is host-side bash/awk.
 
 Host reality for builders: Arch Linux, Docker 29.7, image already pulled, uid:gid 1000:1000, no `php`/`composer` on PATH. macOS-only criteria (runner R3.4, plugin R1.2 macOS half) are **verified by inspection; runtime check deferred to a macOS machine**.
 
@@ -335,7 +335,7 @@ Write the skill that teaches Claude when to reach for the command. All four crit
   2. `fix` on the disposable copy: exit 0; a subsequent `check` on the copy exits 0 and reports zero violations.
   3. The pristine `tests/fixture/Sample.php` is byte-identical after the whole run (`sha256sum` before/after).
   4. `git status --porcelain` at the repo root is empty at the end of a successful run.
-  5. Runner completeness (pR4.1): assert `${CLAUDE_PLUGIN_ROOT:-$repo_root}/bin/php-cs-fixer-docker`, `config/default.php-cs-fixer.php`, and `lib/summarize.php` all exist next to the manifest, i.e. the plugin ships the whole runner and nothing is fetched to make a run work.
+  5. Runner completeness (pR4.1): assert `${CLAUDE_PLUGIN_ROOT:-$repo_root}/bin/php-cs-fixer-docker`, and `config/default.php-cs-fixer.php` both exist next to the manifest, i.e. the plugin ships the whole runner and nothing is fetched to make a run work.
 **Verification the builder must run:** `bash tests/verify.sh` exits 0 on a good tree; deliberately break one thing (e.g. temporarily corrupt the fixture so `check` passes) and confirm a non-zero exit and a named failed assertion; confirm `git status --porcelain` is empty afterwards in both cases.
 **Done when:**
 - The repository contains a PHP fixture that violates the bundled default configuration.
@@ -355,7 +355,7 @@ Write the skill that teaches Claude when to reach for the command. All four crit
 Extend `tests/verify.sh` with the remaining machine-checkable assertions. Keep each as an independent `assert` so a failure names the criterion it guards.
 - **Version ↔ image tag (pR6.3):** read `version` from `.claude-plugin/plugin.json` (parse with `node -e` — node is on this host — or a `grep -o` fallback documented in a comment), read the `- <version>: <image>` line from the CHANGELOG `## VERSION-IMAGE mapping` block, read the `IMAGE=` constant from `bin/php-cs-fixer-docker`, and fail when the tag recorded for the current version differs from the tag in use. This is the repo-local assertion the kit asks for — no CI pipeline.
 - **Single-point image reference (R1.4) and stability (R1.3):** assert `grep -c 'ghcr.io/php-cs-fixer' bin/php-cs-fixer-docker` equals 1 and that two consecutive runs report the identical image reference.
-- **No run-time fetching (pR4.3, inspection):** grep the runner, summarizer, command, and skill for `curl`, `wget`, `git clone`, `git fetch`, `scp`, `npm i`, `composer install` and fail on any hit outside comments.
+- **No run-time fetching (pR4.3, inspection):** grep the runner, command, and skill for `curl`, `wget`, `git clone`, `git fetch`, `scp`, `npm i`, `composer install` and fail on any hit outside comments.
 - **Offline behaviour (pR4.2):** with the image already present, re-run `check` with host networking removed. Preferred: `unshare -rn bash -c '<runner> check <fixture>'` (the Docker socket is a unix socket and stays reachable inside a network namespace). If `unshare -rn` is unavailable or denied, record an explicit `SKIP: offline check (unshare unavailable)` line and do not fail the script — but the skip must be visible in the output, not silent.
 - **Ownership (R3.1–R3.3, Linux only):** after a `fix` on the disposable copy, `stat -c '%u:%g'` on a rewritten file and on the generated `.php-cs-fixer.cache` equals `id -u`:`id -g`, and `find "$work" -user 0` is empty. Guard with `[ "$(uname -s)" = Linux ]`; on Darwin print `SKIP: ownership assertions (macOS)` — **verify by inspection; runtime check deferred to a macOS machine**.
 - **Config precedence (R4.1, R4.2):** in the disposable work dir, write a temporary `.php-cs-fixer.dist.php` and assert the `config:` line names it; add a `.php-cs-fixer.php` and assert the `config:` line switches to it; remove both and assert the bundled-default label.
