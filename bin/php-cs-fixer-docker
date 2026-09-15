@@ -13,7 +13,23 @@ EXIT_OK=0
 EXIT_VIOLATIONS=1
 EXIT_TOOL_ERROR=2
 
+# The ONLY place the image reference lives. Bumping it is a plugin release:
+# update CHANGELOG.md "VERSION-IMAGE mapping" and .claude-plugin/plugin.json.
+# PHPCSFIXER_IMAGE_OVERRIDE exists solely so tests can provoke a pull failure.
+IMAGE="${PHPCSFIXER_IMAGE_OVERRIDE:-ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5}"
+
 RUNNER_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+BUNDLED_CONFIG_HOST="$RUNNER_ROOT/config/default.php-cs-fixer.php"
+BUNDLED_CONFIG_CONTAINER="/cavekit/default.php-cs-fixer.php"
+BUNDLED_CONFIG_LABEL="bundled default (@Symfony, non-risky, short arrays)"
+
+# Preflight cause messages: four distinct single-line causes (runner R8).
+MSG_NO_DOCKER="docker CLI not found on PATH; install Docker"
+MSG_NO_DAEMON="cannot reach the Docker daemon; is it running?"
+MSG_NO_SCOPE="no scope: not inside a git repository and no path given; pass a path"
+MSG_PULL_FAILED="failed to pull image"
+
+DIFF_DELIMITER="--- diff ---"
 
 # ---------------------------------------------------------------- helpers
 usage() {
@@ -29,7 +45,7 @@ USAGE
 }
 
 die() {
-    printf 'php-cs-fixer-docker: %s\n' "$*" >&2
+    printf 'error: %s\n' "$*" >&2
     exit "$EXIT_TOOL_ERROR"
 }
 
@@ -58,13 +74,147 @@ resolve_project_root() {
     P="$(cd -- "$P" && pwd -P)" || die "cannot enter project root: $P"
 }
 
-# ---------------------------------------------------------------- stubs (filled by later tasks)
-run_fixer() { die "TODO run_fixer"; }            # T-004
-resolve_config() { die "TODO resolve_config"; }  # T-005
-resolve_scope() { die "TODO resolve_scope"; }    # T-006
-preflight() { die "TODO preflight"; }            # T-007
-run_operation() { die "TODO run_operation"; }    # T-008
-print_summary() { die "TODO print_summary"; }    # T-009
+# Absolute, symlink-resolved path without depending on realpath(1) (absent on stock macOS).
+abs_path() {
+    local p=$1
+    if [ -d "$p" ]; then
+        (cd -- "$p" && pwd -P)
+    else
+        local dir base
+        dir=$(dirname -- "$p"); base=$(basename -- "$p")
+        (cd -- "$dir" && printf '%s/%s\n' "$(pwd -P)" "$base")
+    fi
+}
+
+# ---------------------------------------------------------------- docker layer (runner R1, R2, R3)
+# The single place a container is started. Mounts P at the identical absolute
+# path and runs with P as workdir, so __DIR__, vendor/autoload.php and every path
+# php-cs-fixer prints are host-valid. On Linux the process runs as the invoking
+# uid:gid so rewritten files and .php-cs-fixer.cache keep the caller's ownership;
+# on macOS Docker Desktop already maps ownership, so no --user is passed.
+run_fixer() {
+    local -a docker_args=(run --rm -v "$P:$P" -w "$P" -v "$BUNDLED_CONFIG_HOST:$BUNDLED_CONFIG_CONTAINER:ro")
+    case "$(uname -s)" in
+        Darwin) ;;
+        *) docker_args+=(--user "$(id -u):$(id -g)") ;;
+    esac
+    docker "${docker_args[@]}" "$IMAGE" "$@"
+}
+
+# ---------------------------------------------------------------- config resolution (runner R4)
+# Detection order mirrors php-cs-fixer's own precedence (.php-cs-fixer.php beats
+# .php-cs-fixer.dist.php). For project configs no --config is passed, so
+# php-cs-fixer's discovery stays authoritative; the runner only labels it.
+CONFIG_ARGS=()
+CONFIG_LABEL=""
+resolve_config() {
+    if [ -f "$P/.php-cs-fixer.php" ]; then
+        CONFIG_LABEL="project ($P/.php-cs-fixer.php)"
+    elif [ -f "$P/.php-cs-fixer.dist.php" ]; then
+        CONFIG_LABEL="project ($P/.php-cs-fixer.dist.php)"
+    else
+        CONFIG_ARGS=("--config=$BUNDLED_CONFIG_CONTAINER")
+        CONFIG_LABEL="$BUNDLED_CONFIG_LABEL"
+    fi
+}
+
+# ---------------------------------------------------------------- scope resolution (runner R7)
+SCOPE=()
+EMPTY_SCOPE=0
+resolve_scope() {
+    if [ ${#PATHS[@]} -gt 0 ]; then
+        local p abs
+        for p in "${PATHS[@]}"; do
+            [ -e "$p" ] || die "path does not exist: $p"
+            abs=$(abs_path "$p") || die "cannot resolve path: $p"
+            case "$abs" in
+                "$P"|"$P"/*) SCOPE+=("$abs") ;;
+                *) die "path is outside the project root: $p" ;;
+            esac
+        done
+        return
+    fi
+    [ "$IN_GIT_REPO" -eq 1 ] || die "$MSG_NO_SCOPE"
+
+    # Git working set: modified, staged, untracked .php files. -z keeps odd names
+    # intact, -uall lists files inside untracked directories individually.
+    local rec xy path
+    while IFS= read -r -d '' rec; do
+        xy=${rec:0:2}
+        path=${rec:3}
+        case "$xy" in
+            R?|C?|?R|?C) IFS= read -r -d '' _ ;;   # rename/copy: drop the original-path field
+        esac
+        case "$xy" in
+            D?|?D) continue ;;                     # deleted: nothing on disk to format
+        esac
+        case "$path" in
+            *.php) SCOPE+=("$P/$path") ;;
+        esac
+    done < <(git -c core.quotePath=false -C "$P" status --porcelain -z -uall)
+    [ ${#SCOPE[@]} -gt 0 ] || EMPTY_SCOPE=1
+}
+
+# ---------------------------------------------------------------- preflight (runner R8)
+preflight_docker() {
+    command -v docker >/dev/null 2>&1 || die "$MSG_NO_DOCKER"
+    docker info >/dev/null 2>&1 || die "$MSG_NO_DAEMON"
+}
+
+ensure_image() {
+    docker image inspect "$IMAGE" >/dev/null 2>&1 && return
+    local pull_out
+    if ! pull_out=$(docker pull "$IMAGE" 2>&1); then
+        printf 'error: %s %s\n' "$MSG_PULL_FAILED" "$IMAGE" >&2
+        printf '%s\n' "$pull_out" >&2
+        exit "$EXIT_TOOL_ERROR"
+    fi
+}
+
+# ---------------------------------------------------------------- summary (runner R9)
+# Parses php-cs-fixer's text output. Formats verified against the pinned image:
+#   "Found N of M files that can be fixed" / "Fixed N of M files"
+#   "   1) src/Foo.php"           (file list, outside diff blocks)
+#   "---------- begin diff ----------" ... "----------- end diff -----------"
+print_summary() {
+    local out=$1
+    printf 'config: %s\n' "$CONFIG_LABEL"
+    awk -v P="$P" -v op="$OPERATION" -v delim="$DIFF_DELIMITER" '
+        /begin diff -+$/ { indiff = 1; next }
+        /end diff -+$/   { indiff = 0; next }
+        indiff           { diff = diff $0 "\n"; next }
+        /^(Found|Fixed) [0-9]+ of [0-9]+ files/ { changed = $2; processed = $4; next }
+        /^ +[0-9]+\) /   { sub(/^ +[0-9]+\) /, ""); files = files P "/" $0 "\n"; next }
+        END {
+            printf "files_processed: %d\nfiles_changed: %d\n", processed, changed
+            printf "%s", files
+            if (op == "check" && changed > 0) { print delim; printf "%s", diff }
+        }' "$out"
+}
+
+# ---------------------------------------------------------------- operations (runner R5, R6)
+run_operation() {
+    local -a args=(fix)
+    [ "$OPERATION" = "check" ] && args+=(--dry-run --diff)
+    args+=("${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"}")
+    # Caller flags go last so they override runner defaults (last wins).
+    args+=("${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}")
+    args+=(-- "${SCOPE[@]}")
+
+    local out status mapped
+    out=$(mktemp) || die "cannot create temp file"
+    trap 'rm -f "$out"' EXIT
+    run_fixer "${args[@]}" >"$out" 2>&1
+    status=$?
+    mapped=$(map_fixer_status "$status")
+    if [ "$mapped" -eq "$EXIT_TOOL_ERROR" ]; then
+        # Tool failure: php-cs-fixer's own output, verbatim, no runner commentary.
+        cat "$out" >&2
+        exit "$EXIT_TOOL_ERROR"
+    fi
+    print_summary "$out"
+    exit "$mapped"
+}
 
 # ---------------------------------------------------------------- argument parsing
 OPERATION=""
@@ -99,15 +249,22 @@ main() {
     resolve_project_root
 
     if [ "${PHPCSFIXER_DEBUG_ARGS:-}" = "1" ]; then
-        printf 'operation=%s\nP=%s\nin_git=%s\n' "$OPERATION" "$P" "$IN_GIT_REPO"
+        printf 'operation=%s\nP=%s\nin_git=%s\nimage=%s\n' "$OPERATION" "$P" "$IN_GIT_REPO" "$IMAGE"
         printf 'path=%s\n' "${PATHS[@]+"${PATHS[@]}"}"
         printf 'passthrough=%s\n' "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"
         exit "$EXIT_OK"
     fi
 
-    preflight
-    resolve_config
+    # Preflight order (runner R8): docker CLI -> daemon -> scope/paths -> image.
+    # Nothing below starts a container or touches a project file until all pass.
+    preflight_docker
     resolve_scope
+    resolve_config
+    if [ "$EMPTY_SCOPE" -eq 1 ]; then
+        print_summary /dev/null
+        exit "$EXIT_OK"
+    fi
+    ensure_image
     run_operation
 }
 
