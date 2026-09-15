@@ -448,7 +448,7 @@ Extend `tests/verify.sh` with the remaining machine-checkable assertions. Keep e
 | runner | R9 | R9.3 summary names applied configuration | T-009 | COVERED |
 | runner | R9 | R9.4 check diff after fixed delimiter, mechanically splittable | T-009 | COVERED |
 | runner | R9 | R9.5 zero violations → explicit zero summary, not empty output | T-009 | COVERED |
-| plugin | R1 | R1.1 marketplace add by `owner/repo` lists the plugin | T-010, T-014 | COVERED |
+| plugin | R1 | R1.1 marketplace add by `owner/repo` lists the plugin | T-010, T-014 | PENDING (repo not pushed) |
 | plugin | R1 | R1.2 install succeeds on Linux and macOS with no host PHP (macOS by inspection) | T-010, T-014 | COVERED |
 | plugin | R1 | R1.3 command available in a new session after install, no further steps | T-010 | COVERED |
 | plugin | R1 | R1.4 install needs no commands beyond add + install | T-010, T-014 | COVERED |
@@ -457,10 +457,10 @@ Extend `tests/verify.sh` with the remaining machine-checkable assertions. Keep e
 | plugin | R2 | R2.3 extra php-cs-fixer flags reach the tool unchanged | T-010 | COVERED |
 | plugin | R2 | R2.4 outcome is the runner's, not a reformatted substitute | T-010 | COVERED |
 | plugin | R2 | R2.5 no hooks, no event-driven triggers | T-010 | COVERED |
-| plugin | R3 | R3.1 skill states explicit trigger conditions (human review) | T-011 | COVERED |
-| plugin | R3 | R3.2 skill has explicit do-not list incl. the three minimums (human review) | T-011 | COVERED |
-| plugin | R3 | R3.3 skill directs `check` before `fix` absent a rewrite request (human review) | T-011 | COVERED |
-| plugin | R3 | R3.4 skill discoverable without the user naming it (human review) | T-011 | COVERED |
+| plugin | R3 | R3.1 skill states explicit trigger conditions (human review) | T-011 | HUMAN REVIEW |
+| plugin | R3 | R3.2 skill has explicit do-not list incl. the three minimums (human review) | T-011 | HUMAN REVIEW |
+| plugin | R3 | R3.3 skill directs `check` before `fix` absent a rewrite request (human review) | T-011 | HUMAN REVIEW |
+| plugin | R3 | R3.4 skill discoverable without the user naming it (human review) | T-011 | HUMAN REVIEW |
 | plugin | R4 | R4.1 installed plugin contains the complete runner, no run-time download | T-012 | COVERED |
 | plugin | R4 | R4.2 image present + host networking disabled → `check` still completes | T-013 | COVERED |
 | plugin | R4 | R4.3 no network-fetch instruction beyond the image pull (inspection) | T-013 | COVERED |
