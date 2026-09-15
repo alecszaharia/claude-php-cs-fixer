@@ -71,7 +71,7 @@ Preflight failures print a single cause line and touch no file. Passing a verbos
 2. Otherwise `.php-cs-fixer.dist.php` at the project root, if present.
 3. Otherwise the bundled default: `@Symfony`, non-risky rules only, short array syntax (`config/default.php-cs-fixer.php`).
 
-Project configs are loaded by php-cs-fixer itself, so `__DIR__`, `require __DIR__ . '/vendor/autoload.php'`, and custom fixers work as long as the project's `vendor/` exists. A caller-supplied `--rules` replaces the bundled default (php-cs-fixer refuses `--config` together with `--rules`).
+Project configs are loaded by php-cs-fixer itself, so `__DIR__`, `require __DIR__ . '/vendor/autoload.php'`, and custom fixers work as long as the project's `vendor/` exists. A caller-supplied `--rules` replaces whichever configuration was resolved, and the `config:` line says so (php-cs-fixer refuses `--config` together with `--rules`).
 
 The project root is mounted at the same absolute path inside the container and used as the working directory; `.php-cs-fixer.cache` is written there. On Linux the container runs as the invoking user, so files keep their ownership.
 

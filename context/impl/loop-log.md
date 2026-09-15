@@ -15,3 +15,7 @@
 - T-011: skill — DONE. Files: skills/php-cs-fixer/SKILL.md. Human review pending on 4 criteria. Next: T-012
 - T-012+T-013: fixture + verify.sh — DONE. Files: tests/. Tests P (49/49). Harness fixes: own git repo for work dir, --using-cache=no on pristine check, pull exit capture. Next: T-014
 - T-014: README — DONE. Files: README.md. Next: post-build
+
+### Iteration 4 — 2026-09-15T14:08:47Z (inspector gate; Codex CLI incompatible with cavekit script, ck:inspector used)
+- Inspector: BLOCK, 15 findings. Fixed all in runner/verify: P0 explicit --config for project configs (multi-path runs failed); P1 --show-progress=none + awk strips fixer suffix (verbose broke file list); P1 mktemp templates, sha256sum→shasum fallback, node fallback (macOS/no-node); P2 --rules label for any config, ':' in root rejected, image override gated by PHPCSFIXER_SELFTEST=1 + warning, symlink-resolved RUNNER_ROOT + bundled-config existence check; P3 HOME=/tmp, COLUMNS=200, id guard, pull failure single line, git-absent detection, absolute-path guard, dropped undocumented exclude(). verify.sh 49→69 assertions (git scope, verbose paths, missing vendor, project config + multi-path, --rules label, override ignored).
+- Coverage matrix relabelled: plugin R1.1 PENDING (repo not pushed), plugin R3.1–R3.4 HUMAN REVIEW.

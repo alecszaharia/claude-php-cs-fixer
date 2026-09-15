@@ -15,11 +15,21 @@ EXIT_TOOL_ERROR=2
 
 # The ONLY place the image reference lives. Bumping it is a plugin release:
 # update CHANGELOG.md "VERSION-IMAGE mapping" and .claude-plugin/plugin.json.
-# PHPCSFIXER_IMAGE_OVERRIDE exists solely so tests can provoke a pull failure.
-IMAGE="${PHPCSFIXER_IMAGE_OVERRIDE:-ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5}"
+IMAGE="ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5"
+# Self-test hook: tests/verify.sh provokes a pull failure by overriding the image.
+# Honoured only when PHPCSFIXER_SELFTEST=1 is also set, and always announced.
+if [ "${PHPCSFIXER_SELFTEST:-}" = "1" ] && [ -n "${PHPCSFIXER_IMAGE_OVERRIDE:-}" ]; then
+    IMAGE="$PHPCSFIXER_IMAGE_OVERRIDE"
+    printf 'warning: self-test image override active: %s\n' "$IMAGE" >&2
+fi
 
 # Builtins only (no dirname): must work before PATH is validated by preflight.
-_self="${BASH_SOURCE[0]}"; case "$_self" in */*) _self_dir="${_self%/*}" ;; *) _self_dir="." ;; esac
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+    _target=$(readlink "$_self")
+    case "$_target" in /*) _self="$_target" ;; *) _self="${_self%/*}/$_target" ;; esac
+done
+case "$_self" in */*) _self_dir="${_self%/*}" ;; *) _self_dir="." ;; esac
 RUNNER_ROOT="$(cd -- "$_self_dir/.." && pwd -P)"
 BUNDLED_CONFIG_HOST="$RUNNER_ROOT/config/default.php-cs-fixer.php"
 BUNDLED_CONFIG_CONTAINER="/cavekit/default.php-cs-fixer.php"
@@ -29,7 +39,7 @@ BUNDLED_CONFIG_LABEL="bundled default (@Symfony, non-risky, short arrays)"
 MSG_NO_DOCKER="docker CLI not found on PATH; install Docker"
 MSG_NO_DAEMON="cannot reach the Docker daemon; is it running?"
 MSG_NO_SCOPE="no scope: not inside a git repository and no path given; pass a path"
-MSG_PULL_FAILED="failed to pull image"
+MSG_PULL_FAILED="failed to pull image"   # followed by the image and a hint, one line
 
 DIFF_DELIMITER="--- diff ---"
 
@@ -66,6 +76,7 @@ map_fixer_status() {
 # Resolve the project root P: git top-level of $PWD, else $PWD itself.
 resolve_project_root() {
     local top
+    command -v git >/dev/null 2>&1 || die "git not found on PATH; install git"
     if top=$(git rev-parse --show-toplevel 2>/dev/null); then
         IN_GIT_REPO=1
         P="$top"
@@ -74,6 +85,7 @@ resolve_project_root() {
         P="$PWD"
     fi
     P="$(cd -- "$P" && pwd -P)" || die "cannot enter project root: $P"
+    case "$P" in *:*) die "project root path contains ':', which Docker bind mounts cannot express: $P" ;; esac
 }
 
 # Absolute, symlink-resolved path without depending on realpath(1) (absent on stock macOS).
@@ -95,40 +107,48 @@ abs_path() {
 # uid:gid so rewritten files and .php-cs-fixer.cache keep the caller's ownership;
 # on macOS Docker Desktop already maps ownership, so no --user is passed.
 run_fixer() {
-    local -a docker_args=(run --rm -v "$P:$P" -w "$P" -v "$BUNDLED_CONFIG_HOST:$BUNDLED_CONFIG_CONTAINER:ro")
+    [ -f "$BUNDLED_CONFIG_HOST" ] || die "bundled config missing: $BUNDLED_CONFIG_HOST"
+    # COLUMNS keeps php-cs-fixer's error text from wrapping paths at 80 chars.
+    local -a docker_args=(run --rm -v "$P:$P" -w "$P" -e HOME=/tmp -e COLUMNS=200 -v "$BUNDLED_CONFIG_HOST:$BUNDLED_CONFIG_CONTAINER:ro")
+    local uid gid
     case "$(uname -s)" in
         Darwin) ;;
-        *) docker_args+=(--user "$(id -u):$(id -g)") ;;
+        *)
+            uid=$(id -u) && gid=$(id -g) || die "cannot determine uid/gid for the container user"
+            docker_args+=(--user "$uid:$gid") ;;
     esac
     docker "${docker_args[@]}" "$IMAGE" "$@"
 }
 
 # ---------------------------------------------------------------- config resolution (runner R4)
 # Detection order mirrors php-cs-fixer's own precedence (.php-cs-fixer.php beats
-# .php-cs-fixer.dist.php). For project configs no --config is passed, so
-# php-cs-fixer's discovery stays authoritative; the runner only labels it.
+# .php-cs-fixer.dist.php).
 CONFIG_ARGS=()
 CONFIG_LABEL=""
 resolve_config() {
     local a
+    # --config is passed explicitly in every case: php-cs-fixer requires it
+    # whenever more than one path is given.
     if [ -f "$P/.php-cs-fixer.php" ]; then
+        CONFIG_ARGS=("--config=$P/.php-cs-fixer.php")
         CONFIG_LABEL="project ($P/.php-cs-fixer.php)"
     elif [ -f "$P/.php-cs-fixer.dist.php" ]; then
+        CONFIG_ARGS=("--config=$P/.php-cs-fixer.dist.php")
         CONFIG_LABEL="project ($P/.php-cs-fixer.dist.php)"
     else
         CONFIG_ARGS=("--config=$BUNDLED_CONFIG_CONTAINER")
         CONFIG_LABEL="$BUNDLED_CONFIG_LABEL"
-        # php-cs-fixer refuses --config together with --rules; a caller-supplied
-        # --rules therefore replaces the bundled default instead of colliding with it.
-        for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
-            case "$a" in
-                --rules|--rules=*)
-                    CONFIG_ARGS=()
-                    CONFIG_LABEL="none (caller --rules replaces bundled default)"
-                    break ;;
-            esac
-        done
     fi
+    # php-cs-fixer refuses --config together with --rules; a caller-supplied
+    # --rules therefore replaces the resolved configuration, and the label says so.
+    for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
+        case "$a" in
+            --rules|--rules=*)
+                CONFIG_ARGS=()
+                CONFIG_LABEL="none (caller --rules replaces: $CONFIG_LABEL)"
+                break ;;
+        esac
+    done
 }
 
 # ---------------------------------------------------------------- scope resolution (runner R7)
@@ -176,12 +196,8 @@ preflight_docker() {
 
 ensure_image() {
     docker image inspect "$IMAGE" >/dev/null 2>&1 && return
-    local pull_out
-    if ! pull_out=$(docker pull "$IMAGE" 2>&1); then
-        printf 'error: %s %s\n' "$MSG_PULL_FAILED" "$IMAGE" >&2
-        printf '%s\n' "$pull_out" >&2
-        exit "$EXIT_TOOL_ERROR"
-    fi
+    docker pull "$IMAGE" >/dev/null 2>&1 \
+        || die "$MSG_PULL_FAILED $IMAGE (run: docker pull $IMAGE)"
 }
 
 # ---------------------------------------------------------------- summary (runner R9)
@@ -197,7 +213,9 @@ print_summary() {
         /end diff -+$/   { indiff = 0; next }
         indiff           { diff = diff $0 "\n"; next }
         /^(Found|Fixed) [0-9]+ of [0-9]+ files/ { changed = $2; processed = $4; next }
-        /^ +[0-9]+\) /   { sub(/^ +[0-9]+\) /, ""); files = files P "/" $0 "\n"; next }
+        /(^| )[0-9]+\) /  { sub(/^.*[0-9]+\) /, ""); sub(/ \([^)]*\)$/, "")
+                           if ($0 !~ /^\//) $0 = P "/" $0
+                           files = files $0 "\n"; next }
         END {
             printf "files_processed: %d\nfiles_changed: %d\n", processed, changed
             printf "%s", files
@@ -207,7 +225,7 @@ print_summary() {
 
 # ---------------------------------------------------------------- operations (runner R5, R6)
 run_operation() {
-    local -a args=(fix)
+    local -a args=(fix --show-progress=none)
     [ "$OPERATION" = "check" ] && args+=(--dry-run --diff)
     args+=("${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"}")
     # Caller flags go last so they override runner defaults (last wins).
@@ -215,7 +233,7 @@ run_operation() {
     args+=(-- "${SCOPE[@]}")
 
     local out status mapped
-    out=$(mktemp) || die "cannot create temp file"
+    out=$(mktemp "${TMPDIR:-/tmp}/php-cs-fixer-docker.XXXXXX") || die "cannot create temp file"
     trap 'rm -f "$out"' EXIT
     run_fixer "${args[@]}" >"$out" 2>&1
     status=$?

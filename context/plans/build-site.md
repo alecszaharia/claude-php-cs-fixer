@@ -1,6 +1,6 @@
 ---
 created: "2026-09-15T14:00:00Z"
-last_edited: "2026-09-15T14:40:00Z"
+last_edited: "2026-09-15T18:20:00Z"
 ---
 # Build Site
 
@@ -479,7 +479,7 @@ Extend `tests/verify.sh` with the remaining machine-checkable assertions. Keep e
 | plugin | R7 | R7.4 exits 0 on success, non-zero on failure, no prompts | T-012 | COVERED |
 | plugin | R7 | R7.5 working tree unchanged after a successful run | T-012 | COVERED |
 
-**Coverage: 71/71 criteria (100%)**
+**Coverage: 71/71 criteria mapped to tasks. Verification status after build: 66 verified by tests/verify.sh or direct runs, 4 HUMAN REVIEW (plugin R3), 1 PENDING (plugin R1.1 needs the pushed GitHub repo). macOS criteria verified by inspection only.**
 
 ## Dependency Graph
 

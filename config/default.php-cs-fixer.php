@@ -16,8 +16,4 @@ return (new PhpCsFixer\Config())
         '@Symfony' => true,
         'array_syntax' => ['syntax' => 'short'],
     ])
-    ->setFinder(
-        PhpCsFixer\Finder::create()
-            ->in(getcwd())
-            ->exclude(['vendor', 'var', 'node_modules'])
-    );
+    ->setFinder(PhpCsFixer\Finder::create()->in(getcwd()));
