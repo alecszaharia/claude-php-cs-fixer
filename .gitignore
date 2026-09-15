@@ -10,3 +10,8 @@
 .cavekit/task-status.json
 .cavekit/tasks.json
 .cavekit/capabilities.json
+
+# tests/verify.sh disposable work dirs
+.verify-*
+.php-cs-fixer.cache
+.claude/ralph-loop.local.md
