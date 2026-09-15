@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# php-cs-fixer-docker — run php-cs-fixer inside a pinned Docker image.
+#
+# Usage: php-cs-fixer-docker <check|fix> [paths...] [-- extra php-cs-fixer flags]
+#
+# Exit status: 0 ok, 1 violations found (check), 2 tool/preflight error.
+# php-cs-fixer's own dry-run "files need fixing" status (bit 8) maps to 1;
+# every other non-zero php-cs-fixer status maps to 2.
+set -u
+
+# ---------------------------------------------------------------- constants
+EXIT_OK=0
+EXIT_VIOLATIONS=1
+EXIT_TOOL_ERROR=2
+
+RUNNER_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+# ---------------------------------------------------------------- helpers
+usage() {
+    cat >&2 <<'USAGE'
+Usage: php-cs-fixer-docker <check|fix> [paths...] [-- extra php-cs-fixer flags]
+
+  check   dry-run: report violations with a diff, write nothing (exit 1 if any)
+  fix     rewrite files in place
+
+Paths default to the git working set (modified, staged, untracked .php files).
+Anything after `--` is forwarded to php-cs-fixer verbatim.
+USAGE
+}
+
+die() {
+    printf 'php-cs-fixer-docker: %s\n' "$*" >&2
+    exit "$EXIT_TOOL_ERROR"
+}
+
+# Map a php-cs-fixer exit status to this script's exit classes.
+map_fixer_status() {
+    local status=$1
+    if [ "$status" -eq 0 ]; then
+        echo "$EXIT_OK"
+    elif [ $((status & 8)) -ne 0 ] && [ $((status & ~8)) -eq 0 ]; then
+        echo "$EXIT_VIOLATIONS"
+    else
+        echo "$EXIT_TOOL_ERROR"
+    fi
+}
+
+# Resolve the project root P: git top-level of $PWD, else $PWD itself.
+resolve_project_root() {
+    local top
+    if top=$(git rev-parse --show-toplevel 2>/dev/null); then
+        IN_GIT_REPO=1
+        P="$top"
+    else
+        IN_GIT_REPO=0
+        P="$PWD"
+    fi
+    P="$(cd -- "$P" && pwd -P)" || die "cannot enter project root: $P"
+}
+
+# ---------------------------------------------------------------- stubs (filled by later tasks)
+run_fixer() { die "TODO run_fixer"; }            # T-004
+resolve_config() { die "TODO resolve_config"; }  # T-005
+resolve_scope() { die "TODO resolve_scope"; }    # T-006
+preflight() { die "TODO preflight"; }            # T-007
+run_operation() { die "TODO run_operation"; }    # T-008
+print_summary() { die "TODO print_summary"; }    # T-009
+
+# ---------------------------------------------------------------- argument parsing
+OPERATION=""
+PATHS=()
+PASSTHROUGH=()
+
+parse_args() {
+    if [ $# -eq 0 ]; then
+        usage
+        exit "$EXIT_TOOL_ERROR"
+    fi
+    case "$1" in
+        check|fix) OPERATION=$1 ;;
+        -h|--help) usage; exit "$EXIT_OK" ;;
+        *) usage; die "unknown operation: $1" ;;
+    esac
+    shift
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "--" ]; then
+            shift
+            PASSTHROUGH=("$@")
+            break
+        fi
+        PATHS+=("$1")
+        shift
+    done
+}
+
+# ---------------------------------------------------------------- main
+main() {
+    parse_args "$@"
+    resolve_project_root
+
+    if [ "${PHPCSFIXER_DEBUG_ARGS:-}" = "1" ]; then
+        printf 'operation=%s\nP=%s\nin_git=%s\n' "$OPERATION" "$P" "$IN_GIT_REPO"
+        printf 'path=%s\n' "${PATHS[@]+"${PATHS[@]}"}"
+        printf 'passthrough=%s\n' "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"
+        exit "$EXIT_OK"
+    fi
+
+    preflight
+    resolve_config
+    resolve_scope
+    run_operation
+}
+
+main "$@"
