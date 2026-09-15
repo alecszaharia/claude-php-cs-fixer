@@ -18,7 +18,9 @@ EXIT_TOOL_ERROR=2
 # PHPCSFIXER_IMAGE_OVERRIDE exists solely so tests can provoke a pull failure.
 IMAGE="${PHPCSFIXER_IMAGE_OVERRIDE:-ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5}"
 
-RUNNER_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# Builtins only (no dirname): must work before PATH is validated by preflight.
+_self="${BASH_SOURCE[0]}"; case "$_self" in */*) _self_dir="${_self%/*}" ;; *) _self_dir="." ;; esac
+RUNNER_ROOT="$(cd -- "$_self_dir/.." && pwd -P)"
 BUNDLED_CONFIG_HOST="$RUNNER_ROOT/config/default.php-cs-fixer.php"
 BUNDLED_CONFIG_CONTAINER="/cavekit/default.php-cs-fixer.php"
 BUNDLED_CONFIG_LABEL="bundled default (@Symfony, non-risky, short arrays)"
