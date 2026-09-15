@@ -110,6 +110,7 @@ run_fixer() {
 CONFIG_ARGS=()
 CONFIG_LABEL=""
 resolve_config() {
+    local a
     if [ -f "$P/.php-cs-fixer.php" ]; then
         CONFIG_LABEL="project ($P/.php-cs-fixer.php)"
     elif [ -f "$P/.php-cs-fixer.dist.php" ]; then
@@ -117,6 +118,16 @@ resolve_config() {
     else
         CONFIG_ARGS=("--config=$BUNDLED_CONFIG_CONTAINER")
         CONFIG_LABEL="$BUNDLED_CONFIG_LABEL"
+        # php-cs-fixer refuses --config together with --rules; a caller-supplied
+        # --rules therefore replaces the bundled default instead of colliding with it.
+        for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
+            case "$a" in
+                --rules|--rules=*)
+                    CONFIG_ARGS=()
+                    CONFIG_LABEL="none (caller --rules replaces bundled default)"
+                    break ;;
+            esac
+        done
     fi
 }
 
@@ -214,6 +225,12 @@ run_operation() {
         cat "$out" >&2
         exit "$EXIT_TOOL_ERROR"
     fi
+    # Caller asked php-cs-fixer for verbosity: show its raw output (stderr),
+    # then the fixed-shape summary (stdout).
+    local a
+    for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
+        case "$a" in -v|-vv|-vvv|--verbose) cat "$out" >&2; break ;; esac
+    done
     print_summary "$out"
     exit "$mapped"
 }
