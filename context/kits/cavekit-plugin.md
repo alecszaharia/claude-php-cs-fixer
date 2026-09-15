@@ -1,7 +1,7 @@
 ---
 created: "2026-09-15T13:19:29Z"
-last_edited: "2026-09-15T13:19:29Z"
-complexity:
+last_edited: "2026-09-15T13:45:00Z"
+complexity: medium
 ---
 
 # Cavekit: Plugin
@@ -53,7 +53,7 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 **Acceptance Criteria:**
 - [ ] The installed plugin contains the complete runner; no run-time download of runner content occurs.
 - [ ] With the container image already present locally and host networking disabled, a `check` run still completes.
-- [ ] A run makes no network request other than the container image pull.
+- [ ] The runner contains no instruction that fetches anything over the network other than the container image pull (inspection criterion; the behavioural guarantee is the previous criterion).
 - [ ] The runner version that executes is the one shipped with the installed plugin version, not a separately resolved copy.
 
 **Dependencies:** runner R1
@@ -64,7 +64,7 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 **Acceptance Criteria:**
 - [ ] With the Docker CLI absent, the command's output contains the runner's specific message for that cause (runner R8).
 - [ ] With the Docker daemon unreachable, the command's output contains the runner's specific message for that cause and not the CLI-absent message.
-- [ ] On image pull failure and on invocation outside any project, the corresponding distinct runner messages are surfaced.
+- [ ] On image pull failure and on "no scope" (outside any git repository with no path argument), the corresponding distinct runner messages are surfaced.
 - [ ] In each case the command reports failure to the user and no project file is created or modified.
 
 **Dependencies:** runner R8
@@ -75,7 +75,7 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 **Acceptance Criteria:**
 - [ ] The installed plugin reports a version, and it is visible to the user after install.
 - [ ] Each released version corresponds to exactly one pinned image tag (runner R1).
-- [ ] A change to the pinned image tag is accompanied by a version increase in the same change; a check can compare the two and fail if the tag moved without a version bump.
+- [ ] A change to the pinned image tag is accompanied by a version increase in the same change; a repo-local assertion (part of the R7 verification script, not a CI pipeline) fails if the tag recorded for the current version differs from the tag in use.
 - [ ] The repository documents the release step of bumping version together with the image tag.
 
 **Dependencies:** runner R1
@@ -85,7 +85,7 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 
 **Acceptance Criteria:**
 - [ ] The repository contains a PHP fixture that violates the bundled default configuration (runner R4).
-- [ ] The verification script runs `check` on the fixture and asserts non-zero exit plus a diff mentioning the fixture file (runner R6).
+- [ ] The verification script passes the fixture path explicitly (never relying on runner R7 default scope) and runs `check` on it, asserting non-zero exit plus a diff mentioning the fixture file (runner R6).
 - [ ] The verification script runs `fix` on a disposable copy of the fixture and asserts the copy becomes clean under a subsequent `check`.
 - [ ] The script exits zero on success and non-zero on any failed assertion, with no interactive prompts.
 - [ ] The script leaves the repository working tree unchanged after a successful run.
@@ -105,4 +105,5 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 - See also: `cavekit-overview.md`.
 
 ## Changelog
+- 2026-09-15: Review fixes — R4 network criterion made inspectional; R6 tag/version assertion scoped to repo-local script; R7 script passes fixture path explicitly.
 - 2026-09-15: Initial draft from `context/refs/design-brief.md` (approved 2026-09-15).
