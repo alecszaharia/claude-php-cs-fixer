@@ -32,7 +32,7 @@ done
 case "$_self" in */*) _self_dir="${_self%/*}" ;; *) _self_dir="." ;; esac
 RUNNER_ROOT="$(cd -- "$_self_dir/.." && pwd -P)"
 BUNDLED_CONFIG_HOST="$RUNNER_ROOT/config/default.php-cs-fixer.php"
-BUNDLED_CONFIG_CONTAINER="/cavekit/default.php-cs-fixer.php"
+BUNDLED_CONFIG_CONTAINER="/php-cs-fixer-plugin/default.php-cs-fixer.php"
 BUNDLED_CONFIG_LABEL="bundled default (@Symfony, non-risky, short arrays)"
 
 # Preflight cause messages: four distinct single-line causes (runner R8).
