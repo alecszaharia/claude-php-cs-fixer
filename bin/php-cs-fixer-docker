@@ -107,10 +107,15 @@ abs_path() {
 # php-cs-fixer prints are host-valid. On Linux the process runs as the invoking
 # uid:gid so rewritten files and .php-cs-fixer.cache keep the caller's ownership;
 # on macOS Docker Desktop already maps ownership, so no --user is passed.
+#
+# --network=none: formatting never needs the network, and a project
+# .php-cs-fixer.php is arbitrary PHP that php-cs-fixer executes with the project
+# mounted read-write. Cutting egress makes "no run-time fetching" a property of
+# the sandbox rather than a promise about the runner's own source.
 run_fixer() {
     [ -f "$BUNDLED_CONFIG_HOST" ] || die "bundled config missing: $BUNDLED_CONFIG_HOST"
     # COLUMNS keeps php-cs-fixer's error text from wrapping paths at 80 chars.
-    local -a docker_args=(run --rm -v "$P:$P" -w "$P" -e HOME=/tmp -e COLUMNS=200 -v "$BUNDLED_CONFIG_HOST:$BUNDLED_CONFIG_CONTAINER:ro")
+    local -a docker_args=(run --rm --network=none -v "$P:$P" -w "$P" -e HOME=/tmp -e COLUMNS=200 -v "$BUNDLED_CONFIG_HOST:$BUNDLED_CONFIG_CONTAINER:ro")
     local uid gid
     case "$(uname -s)" in
         Darwin) ;;
@@ -181,6 +186,7 @@ resolve_scope() {
         esac
         case "$xy" in
             D?|?D) continue ;;                     # deleted: nothing on disk to format
+            *U*|AA) continue ;;                    # unmerged: conflict markers are not parseable PHP
         esac
         case "$path" in
             *.php) SCOPE+=("$P/$path") ;;
@@ -226,9 +232,9 @@ print_summary() {
         /end diff -+$/   { indiff = 0; next }
         indiff           { diff = diff $0 "\n"; next }
         /^(Found|Fixed) [0-9]+ of [0-9]+ files/ { changed = $2; processed = $4; next }
-        /(^| )[0-9]+\) /  { sub(/^.*[0-9]+\) /, ""); sub(/ \([^)]*\)$/, "")
-                           if ($0 !~ /^\//) $0 = P "/" $0
-                           files = files $0 "\n"; next }
+        /^[[:space:]]*[0-9]+\) / { sub(/^[[:space:]]*[0-9]+\) /, ""); sub(/ \([^)]*\)$/, "")
+                                   if ($0 !~ /^\//) $0 = P "/" $0
+                                   files = files $0 "\n"; next }
         END {
             printf "files_processed: %d\nfiles_changed: %d\n", processed, changed
             printf "%s", files

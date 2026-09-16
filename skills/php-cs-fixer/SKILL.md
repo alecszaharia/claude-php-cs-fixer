@@ -23,8 +23,9 @@ installed for this purpose.
 ## How
 
 1. Run `/php-cs-fixer:php-cs-fixer check [paths]` first. With no path it covers the git
-   working set (modified, staged, untracked `.php` files); pass paths to
-   widen or narrow. Report the counts and the changed-file list to the user.
+   working set (modified, staged, untracked `.php` files, excluding unmerged
+   ones); pass paths to widen or narrow. Report the counts and the changed-file
+   list to the user.
 2. Run `/php-cs-fixer:php-cs-fixer fix [paths]` only when the user asked for rewrites or
    approved the file list from step 1. A successful `fix` prints nothing; say it
    succeeded and leave inspection to `git diff`.
@@ -66,5 +67,5 @@ files_changed: 1
   what changed. Do not re-run as `check` just to produce a summary.
 - Exit 0: clean (or nothing to process). Exit 1: `check` found violations.
   Exit 2: tool or preflight error; the runner prints one cause line
-  (Docker CLI missing, daemon unreachable, image pull failed, no scope, bad
-  path) or php-cs-fixer's own error verbatim.
+  (git missing, Docker CLI missing, daemon unreachable, image pull failed, no
+  scope, bad path) or php-cs-fixer's own error verbatim.

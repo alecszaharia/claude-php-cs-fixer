@@ -32,7 +32,7 @@ Plugin commands are namespaced as `/<plugin>:<command>`; interactive autocomplet
 
 - `check` is a dry run: lists the files that would change, writes nothing, exits 1 when violations exist. Add `-- --diff` to see the proposed changes themselves.
 - `fix` rewrites files in place. Through the slash command a successful `fix` prints nothing — that keeps it free of an agent's context; use `git diff` to inspect the result. The runner itself still prints its summary when you run it from a shell.
-- With no path the scope is the git working set of the current repository: modified, staged, and untracked `.php` files. Pass a directory (for example `.`) to cover everything. Explicit paths must lie under the project root (the git top-level, or the current directory outside git).
+- With no path the scope is the git working set of the current repository: modified, staged, and untracked `.php` files. Unmerged (conflicted) files are excluded — conflict markers are not parseable PHP. Pass a directory (for example `.`) to cover everything. Explicit paths must lie under the project root (the git top-level, or the current directory outside git).
 - Anything after `--` is forwarded to php-cs-fixer unchanged, for example `-- --verbose` or `-- --allow-risky=yes`.
 
 The runner is a plain shell script and works without Claude:
@@ -63,7 +63,7 @@ Exit status:
 |-------:|---------|
 | 0 | clean, or nothing to process |
 | 1 | `check` found violations (php-cs-fixer's own status 8 is mapped to 1) |
-| 2 | tool or preflight error: Docker CLI missing, daemon unreachable, image pull failed, no scope, invalid path, or a php-cs-fixer failure whose output is shown verbatim |
+| 2 | tool or preflight error: git missing, Docker CLI missing, daemon unreachable, image pull failed, no scope, invalid path, or a php-cs-fixer failure whose output is shown verbatim |
 
 Preflight failures print a single cause line and touch no file. Passing a verbosity flag (`-- --verbose`) additionally prints php-cs-fixer's raw output on stderr.
 
@@ -73,7 +73,7 @@ Preflight failures print a single cause line and touch no file. Passing a verbos
 2. Otherwise `.php-cs-fixer.dist.php` at the project root, if present.
 3. Otherwise the bundled default: `@Symfony`, non-risky rules only, short array syntax (`config/default.php-cs-fixer.php`).
 
-Project configs are loaded by php-cs-fixer itself, so `__DIR__`, `require __DIR__ . '/vendor/autoload.php'`, and custom fixers work as long as the project's `vendor/` exists. A caller-supplied `--rules` replaces whichever configuration was resolved, and the `config:` line says so (php-cs-fixer refuses `--config` together with `--rules`).
+Project configs are loaded by php-cs-fixer itself, so `__DIR__`, `require __DIR__ . '/vendor/autoload.php'`, and custom fixers work as long as the project's `vendor/` exists. A project config is ordinary PHP and php-cs-fixer executes it, so the container runs with `--network=none`: formatting needs no network, and a config from a repository you are merely reading cannot phone home. A caller-supplied `--rules` replaces whichever configuration was resolved, and the `config:` line says so (php-cs-fixer refuses `--config` together with `--rules`).
 
 The project root is mounted at the same absolute path inside the container and used as the working directory; `.php-cs-fixer.cache` is written there. On Linux the container runs as the invoking user, so files keep their ownership.
 

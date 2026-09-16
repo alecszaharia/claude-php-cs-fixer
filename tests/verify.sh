@@ -10,7 +10,9 @@ runner="$plugin_root/bin/php-cs-fixer-docker"
 fixture="$repo_root/tests/fixture/Sample.php"
 
 # Portable helpers: macOS has shasum but no sha256sum, and BSD mktemp needs a template.
-if command -v sha256sum >/dev/null 2>&1; then sha() { sha256sum "$@"; }; else sha() { shasum -a 256 "$@"; }; fi
+# SHA_BIN stays a plain word list, not a function: xargs needs a real command.
+if command -v sha256sum >/dev/null 2>&1; then SHA_BIN="sha256sum"; else SHA_BIN="shasum -a 256"; fi
+sha() { $SHA_BIN "$@"; }
 tmpd() { mktemp -d "${TMPDIR:-/tmp}/phpcsfixer-verify.XXXXXX"; }
 json_field() { # json_field <file> <key>   (node if present, sed fallback)
     node -e 'const o=require(process.argv[1]);const v=process.argv[2].split(".").reduce((a,k)=>a[k],o);process.stdout.write(String(v))' "$1" "$2" 2>/dev/null \
@@ -131,8 +133,14 @@ else
 fi
 
 # ---------------------------------------------------------------- runner R8, plugin R5: preflight causes, distinct, no file changes
-snap_before=$(cd "$work" && find . -type f -print0 | sort -z | xargs -0 sha)
-m_cli=$(cd "$work" && env PATH=/nonexistent /bin/bash "$runner" check src/Sample.php 2>&1); rc_cli=$?
+snap_before=$(cd "$work" && find . -type f -print0 | sort -z | xargs -0 $SHA_BIN)
+# A PATH carrying git but not docker isolates the docker-CLI branch. A wholly
+# empty PATH dies earlier, on the git lookup in resolve_project_root — that is a
+# separate cause and is asserted separately below.
+stub=$(tmpd); ln -s "$(command -v git)" "$stub/git"
+m_cli=$(cd "$work" && env PATH="$stub" /bin/bash "$runner" check src/Sample.php 2>&1); rc_cli=$?
+m_git=$(cd "$work" && env PATH=/nonexistent /bin/bash "$runner" check src/Sample.php 2>&1); rc_git=$?
+rm -rf "$stub"
 m_daemon=$(cd "$work" && DOCKER_HOST=unix:///nonexistent/docker.sock "$runner" check src/Sample.php 2>&1); rc_daemon=$?
 m_pull_full=$(cd "$work" && PHPCSFIXER_SELFTEST=1 PHPCSFIXER_IMAGE_OVERRIDE=ghcr.io/php-cs-fixer/php-cs-fixer:0.0.0-does-not-exist "$runner" check src/Sample.php 2>&1); rc_pull=$?
 m_pull=$(grep -v '^warning: self-test' <<<"$m_pull_full")
@@ -141,7 +149,11 @@ nogit=$(tmpd)
 m_scope=$(cd "$nogit" && "$runner" check 2>&1); rc_scope=$?
 rmdir "$nogit"
 assert "docker-CLI-absent exits 2"              test "$rc_cli" -eq 2
+assert "docker-CLI-absent names the docker CLI" grep -q 'docker CLI not found' <<<"$m_cli"
 assert "docker-CLI-absent is one line"          test "$(wc -l <<<"$m_cli")" -eq 1
+assert "git-absent exits 2"                     test "$rc_git" -eq 2
+assert "git-absent names git"                   grep -q 'git not found' <<<"$m_git"
+assert "git-absent is one line"                 test "$(wc -l <<<"$m_git")" -eq 1
 assert "daemon-unreachable exits 2"             test "$rc_daemon" -eq 2
 assert "daemon-unreachable is one line"         test "$(wc -l <<<"$m_daemon")" -eq 1
 assert "pull-failure exits 2"                   test "$rc_pull" -eq 2
@@ -149,8 +161,8 @@ assert "pull-failure is one line"               test "$(wc -l <<<"$m_pull")" -eq
 assert "image override ignored without PHPCSFIXER_SELFTEST" test "$rc_override_ignored" -eq 0
 assert "no-scope exits 2"                       test "$rc_scope" -eq 2
 assert "no-scope is one line"                   test "$(wc -l <<<"$m_scope")" -eq 1
-assert "four preflight causes are distinct"     test "$(printf '%s\n' "$m_cli" "$m_daemon" "$m_pull" "$m_scope" | sort -u | wc -l)" -eq 4
-assert "preflight failures touched no file"     test "$(cd "$work" && find . -type f -print0 | sort -z | xargs -0 sha)" = "$snap_before"
+assert "five preflight causes are distinct"     test "$(printf '%s\n' "$m_cli" "$m_daemon" "$m_pull" "$m_scope" "$m_git" | sort -u | wc -l)" -eq 5
+assert "preflight failures touched no file"     test "$(cd "$work" && find . -type f -print0 | sort -z | xargs -0 $SHA_BIN)" = "$snap_before"
 m_badpath=$(cd "$work" && "$runner" check /etc 2>&1); rc_badpath=$?
 assert "out-of-root path exits 2 and names it"  bash -c '[ "$1" -eq 2 ] && grep -q "/etc" <<<"$2"' _ "$rc_badpath" "$m_badpath"
 m_nopath=$(cd "$work" && "$runner" check nope.php 2>&1); rc_nopath=$?
@@ -204,6 +216,52 @@ assert "missing vendor exits 2 (tool error, not violations)" test "$rc" -eq 2
 assert "missing vendor shows php-cs-fixer's own error"    grep -q 'vendor/autoload.php' <<<"$(tr -d ' \n' <<<"$out")"
 assert "missing vendor adds no runner remediation text"   bash -c '! grep -qiE "composer install|did you|try running" <<<"$1"' _ "$out"
 rm -f "$work/.php-cs-fixer.php"
+
+# ---------------------------------------------------------------- runner R4.3: the container itself has no egress
+# End-to-end, not by inspecting flags: a project config that can open a socket
+# to the outside throws, which would surface as exit 2 and the marker string.
+netrepo=$(tmpd); git init -q "$netrepo"; mkdir -p "$netrepo/src"; cp "$fixture" "$netrepo/src/Sample.php"
+cat > "$netrepo/.php-cs-fixer.php" <<'NETCFG'
+<?php
+if (@fsockopen('ghcr.io', 443, $errno, $errstr, 2)) { throw new RuntimeException('NETWORK_REACHABLE'); }
+return (new PhpCsFixer\Config())
+    ->setRules(['array_syntax' => ['syntax' => 'short']])
+    ->setFinder(PhpCsFixer\Finder::create()->in(__DIR__));
+NETCFG
+out=$(cd "$netrepo" && "$runner" check src/Sample.php 2>&1); rc=$?
+assert "container cannot reach the network"     bash -c '! grep -q NETWORK_REACHABLE <<<"$1"' _ "$out"
+assert "no-network run still formats normally"  test "$rc" -eq 1
+rm -rf "$netrepo"
+
+# ---------------------------------------------------------------- runner R7: unmerged paths stay out of the default scope
+# Conflict markers are not parseable PHP; including them turned every run during
+# a merge into a whole-run tool error.
+conflict=$(tmpd); (
+    cd "$conflict" && git init -q . \
+    && git config user.email v@v && git config user.name v \
+    && printf '<?php\n$a = array(1);\n' > c.php && printf '<?php\n$k = array(9);\n' > other.php \
+    && git add -A && git commit -qm base \
+    && git checkout -q -b side && printf '<?php\n$a = array(2);\n' > c.php && git commit -qam side \
+    && git checkout -q - && printf '<?php\n$a = array(3);\n' > c.php && git commit -qam main \
+    && git merge side
+) >/dev/null 2>&1
+assert "fixture repo really is conflicted"      bash -c 'git -C "$1" status --porcelain | grep -q "^UU "' _ "$conflict"
+printf '\n// touched\n' >> "$conflict/other.php"
+out=$(cd "$conflict" && "$runner" check 2>&1); rc=$?
+assert "conflicted tree does not hard-fail"     test "$rc" -ne 2
+assert "unmerged file excluded from scope"      bash -c '! grep -q "/c.php$" <<<"$1"' _ "$out"
+assert "other dirty files still in scope"       grep -qx "$conflict/other.php" <<<"$out"
+rm -rf "$conflict"
+
+# ---------------------------------------------------------------- runner R9.2: listed paths survive awkward file names
+# "src/2) weird.php" once collapsed to "<root>/weird.php" via a greedy sub.
+awkward=$(tmpd); git init -q "$awkward"; mkdir -p "$awkward/src"
+cp "$fixture" "$awkward/src/2) weird.php"
+out=$(cd "$awkward" && "$runner" check 2>&1)
+listed=$(sed -n '/^--- diff ---$/q;/^\//p' <<<"$out")
+assert "awkward file name listed verbatim"      test "$listed" = "$awkward/src/2) weird.php"
+assert "awkward listed path is openable"        test -e "$listed"
+rm -rf "$awkward"
 
 # ---------------------------------------------------------------- plugin R7.5: tree unchanged
 assert "fixture byte-identical after run"       test "$(sha "$fixture" | cut -d' ' -f1)" = "$fixture_sha_before"

@@ -36,15 +36,15 @@ Contract of the runner (for your understanding, not for rewriting its output):
   violations exist) and `fix` (rewrites files in place). There are no other
   operations.
 - Paths: optional; default is the git working set (modified, staged, untracked
-  `.php` files) of the current repository. Explicit paths must lie under the
-  project root.
+  `.php` files) of the current repository, excluding unmerged files. Explicit
+  paths must lie under the project root.
 - Everything after `--` is forwarded to php-cs-fixer unchanged.
 - Output: `config:`, `files_processed:`, `files_changed:` lines, then one
   absolute path per affected file. No diff is printed unless the user passed
   `-- --diff`, which appends a `--- diff ---` line followed by the unified diff.
-- Exit status: 0 ok, 1 violations found, 2 tool or preflight error (Docker
-  missing, daemon unreachable, image pull failed, no scope, invalid path, or a
-  php-cs-fixer failure whose own output is shown verbatim).
+- Exit status: 0 ok, 1 violations found, 2 tool or preflight error (git missing,
+  Docker missing, daemon unreachable, image pull failed, no scope, invalid path,
+  or a php-cs-fixer failure whose own output is shown verbatim).
 
 Rules:
 
