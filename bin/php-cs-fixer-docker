@@ -48,11 +48,12 @@ usage() {
     cat >&2 <<'USAGE'
 Usage: php-cs-fixer-docker <check|fix> [paths...] [-- extra php-cs-fixer flags]
 
-  check   dry-run: report violations with a diff, write nothing (exit 1 if any)
+  check   dry-run: list the files that would change, write nothing (exit 1 if any)
   fix     rewrite files in place
 
 Paths default to the git working set (modified, staged, untracked .php files).
-Anything after `--` is forwarded to php-cs-fixer verbatim.
+Anything after `--` is forwarded to php-cs-fixer verbatim; pass `-- --diff` to
+append the unified diff after the summary.
 USAGE
 }
 
@@ -200,6 +201,18 @@ ensure_image() {
         || die "$MSG_PULL_FAILED $IMAGE (run: docker pull $IMAGE)"
 }
 
+# ---------------------------------------------------------------- diff mode (runner R9)
+# The summary is the changed-file list, not the diff: a diff of every violation
+# is the single largest part of the output and an agent reader pays for it on
+# every run. It is emitted only when the caller asks for it with `-- --diff`.
+WANT_DIFF=0
+resolve_diff_mode() {
+    local a
+    for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
+        case "$a" in --diff) WANT_DIFF=1; break ;; esac
+    done
+}
+
 # ---------------------------------------------------------------- summary (runner R9)
 # Parses php-cs-fixer's text output. Formats verified against the pinned image:
 #   "Found N of M files that can be fixed" / "Fixed N of M files"
@@ -208,7 +221,7 @@ ensure_image() {
 print_summary() {
     local out=$1
     printf 'config: %s\n' "$CONFIG_LABEL"
-    awk -v P="$P" -v op="$OPERATION" -v delim="$DIFF_DELIMITER" '
+    awk -v P="$P" -v want_diff="$WANT_DIFF" -v delim="$DIFF_DELIMITER" '
         /begin diff -+$/ { indiff = 1; next }
         /end diff -+$/   { indiff = 0; next }
         indiff           { diff = diff $0 "\n"; next }
@@ -219,14 +232,16 @@ print_summary() {
         END {
             printf "files_processed: %d\nfiles_changed: %d\n", processed, changed
             printf "%s", files
-            if (op == "check" && changed > 0) { print delim; printf "%s", diff }
+            if (want_diff == 1 && changed > 0) { print delim; printf "%s", diff }
         }' "$out"
 }
 
 # ---------------------------------------------------------------- operations (runner R5, R6)
 run_operation() {
     local -a args=(fix --show-progress=none)
-    [ "$OPERATION" = "check" ] && args+=(--dry-run --diff)
+    # No --diff by default: the caller gets it by passing `-- --diff`, which
+    # lands in PASSTHROUGH below and switches WANT_DIFF on.
+    [ "$OPERATION" = "check" ] && args+=(--dry-run)
     args+=("${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"}")
     # Caller flags go last so they override runner defaults (last wins).
     args+=("${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}")
@@ -297,6 +312,7 @@ main() {
     preflight_docker
     resolve_scope
     resolve_config
+    resolve_diff_mode
     if [ "$EMPTY_SCOPE" -eq 1 ]; then
         print_summary /dev/null
         exit "$EXIT_OK"

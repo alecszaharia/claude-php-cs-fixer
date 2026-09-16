@@ -6,7 +6,7 @@
       "name": "php-cs-fixer",
       "source": "./",
       "description": "Run php-cs-fixer (check/fix) inside a pinned Docker image. No host PHP required.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     }
   ]
 }

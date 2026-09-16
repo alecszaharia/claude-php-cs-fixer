@@ -70,11 +70,11 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 **Dependencies:** R2, R4
 
 ### R6: Operations
-**Description:** The runner exposes two operations plus flag pass-through: `fix` (rewrites files) and `check` (dry-run with diff, non-zero exit when violations exist). Arbitrary additional php-cs-fixer flags supplied by the caller are passed through to php-cs-fixer. A project-local `.php-cs-fixer.cache` is written in the project and reused across runs.
+**Description:** The runner exposes two operations plus flag pass-through: `fix` (rewrites files) and `check` (dry-run reporting which files would change, non-zero exit when violations exist). Arbitrary additional php-cs-fixer flags supplied by the caller are passed through to php-cs-fixer. A project-local `.php-cs-fixer.cache` is written in the project and reused across runs.
 
 **Acceptance Criteria:**
 - [ ] `fix` on a project with violations rewrites the offending files and exits zero.
-- [ ] `check` on a project with violations leaves every file byte-identical, prints a diff of the proposed changes, and exits non-zero.
+- [ ] `check` on a project with violations leaves every file byte-identical, names each file that would change, and exits non-zero.
 - [ ] `check` on an already-clean project exits zero and reports no violations.
 - [ ] A caller-supplied php-cs-fixer flag (e.g. `--rules`, `--verbose`, `--allow-risky=yes`) reaches php-cs-fixer and changes behaviour accordingly.
 - [ ] A run produces `.php-cs-fixer.cache` at `P`; a second identical run leaves that file in place and, when php-cs-fixer's verbose output is requested, php-cs-fixer itself reports using the cache file.
@@ -106,13 +106,14 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 **Dependencies:** R1, R7
 
 ### R9: Agent-friendly output
-**Description:** Every run that reaches php-cs-fixer (i.e. passes R8 preflight) emits a plain-text summary intended for an agent reader, with fixed field labels one per line: the applied configuration, the number of files processed, the number of files changed (fix) or violating (check), and the list of those files one path per line. For `check`, the diff follows the summary after a fixed delimiter line so the two parts can be split mechanically. Preflight failures emit only their R8 one-line message, no summary. The empty-scope case of R7 (nothing to process) emits the same summary shape with zero counts and no file list.
+**Description:** Every run that reaches php-cs-fixer (i.e. passes R8 preflight) emits a plain-text summary intended for an agent reader, with fixed field labels one per line: the applied configuration, the number of files processed, the number of files changed (fix) or violating (check), and the list of those files one path per line. The summary is the whole default output: the diff is the single largest thing the runner can print and an agent reader pays for it on every run, so it is emitted only when the caller asks for it by passing `--diff` through to php-cs-fixer, in which case it follows the summary after a fixed delimiter line so the two parts can be split mechanically. Preflight failures emit only their R8 one-line message, no summary. The empty-scope case of R7 (nothing to process) emits the same summary shape with zero counts and no file list.
 
 **Acceptance Criteria:**
 - [ ] Every run that reaches php-cs-fixer ends with a summary whose lines carry fixed labels and state the number of files processed and the number of files changed or violating.
 - [ ] The summary lists each changed (fix) or would-change (check) file by path, one per line.
 - [ ] The summary names the applied configuration as required by R4.
-- [ ] For `check`, the diff of proposed changes is present in the output, separated from the summary by a fixed delimiter line, so a reader can split the two without parsing the diff.
+- [ ] Without a caller-supplied `--diff`, no diff and no delimiter line appear in the output of either operation, however many files changed.
+- [ ] With a caller-supplied `--diff`, the diff of proposed changes is present, separated from the summary by a fixed delimiter line, so a reader can split the two without parsing the diff.
 - [ ] A run with zero violations produces a summary explicitly reporting zero, rather than empty output.
 
 **Dependencies:** R4, R6, R7, R8
@@ -131,5 +132,6 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 - See also: `cavekit-overview.md`.
 
 ## Changelog
+- 2026-09-16: R6/R9 — `check` reports the changed-file list instead of a diff; the diff became opt-in via a caller-supplied `--diff`. Motive: the diff dominated the output an agent reader pays for on every run.
 - 2026-09-15: Review fixes — defined project root `P` once (R2) and referenced it from R4/R6/R7/R8; unified R7 no-git-no-path error with R8 "no scope" cause; added out-of-root path rejection; fixed R9 output shape (plain text, fixed labels, delimiter before diff); made cache criterion observable.
 - 2026-09-15: Initial draft from `context/refs/design-brief.md` (approved 2026-09-15).

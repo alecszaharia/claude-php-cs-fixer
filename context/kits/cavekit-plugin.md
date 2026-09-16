@@ -25,13 +25,15 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 **Dependencies:** R4, R6
 
 ### R2: Slash command mapping 1:1 to runner
-**Description:** A single on-demand slash command exposes the runner. Its operations, arguments, and flag pass-through correspond one-to-one to the runner's contract — the command adds no operations of its own and removes none. There is no automatic or hook-driven invocation.
+**Description:** A single on-demand slash command exposes the runner. Its operations, arguments, and flag pass-through correspond one-to-one to the runner's contract — the command adds no operations of its own and removes none. There is no automatic or hook-driven invocation. The command reads its output into an agent's context, so it discards the runner's stdout for `fix`, where the result carried by the exit status and the rewritten files themselves; failures, which arrive on stderr, are never discarded.
 
 **Acceptance Criteria:**
 - [ ] The command supports `fix` and `check` and exactly these two operations (runner R6).
 - [ ] Path arguments given to the command reach the runner unchanged; omitting the path yields the runner's default git working-set scope (runner R7).
 - [ ] Arbitrary extra php-cs-fixer flags given to the command reach php-cs-fixer unchanged (runner R6).
-- [ ] The command's outcome (summary, diff, changed-file list, exit status) is the runner's, not a reformatted substitute (runner R9).
+- [ ] The command's outcome (summary, changed-file list, exit status, and the diff when `--diff` was passed) is the runner's, not a reformatted substitute (runner R9).
+- [ ] A successful `fix` through the command puts no runner stdout into the agent's context; the operation is not re-run as `check` to reconstruct one.
+- [ ] A failing `fix` through the command still surfaces the runner's stderr — its preflight cause line or php-cs-fixer's verbatim error — together with the non-zero exit status (runner R8).
 - [ ] The plugin registers no hooks and no event-driven triggers; the command only runs when explicitly invoked.
 
 **Dependencies:** runner R6, runner R7, runner R9
@@ -85,7 +87,8 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 
 **Acceptance Criteria:**
 - [ ] The repository contains a PHP fixture that violates the bundled default configuration (runner R4).
-- [ ] The verification script passes the fixture path explicitly (never relying on runner R7 default scope) and runs `check` on it, asserting non-zero exit plus a diff mentioning the fixture file (runner R6).
+- [ ] The verification script passes the fixture path explicitly (never relying on runner R7 default scope) and runs `check` on it, asserting non-zero exit plus the fixture file in the changed-file list and no diff in the output (runner R6, R9).
+- [ ] The script also runs `check ... -- --diff` on the fixture and asserts the diff appears after the delimiter, so the opt-in path stays covered (runner R9).
 - [ ] The verification script runs `fix` on a disposable copy of the fixture and asserts the copy becomes clean under a subsequent `check`.
 - [ ] The script exits zero on success and non-zero on any failed assertion, with no interactive prompts.
 - [ ] The script leaves the repository working tree unchanged after a successful run.

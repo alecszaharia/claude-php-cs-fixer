@@ -30,8 +30,8 @@ From a terminal the same two steps are `claude plugin marketplace add alecszahar
 
 Plugin commands are namespaced as `/<plugin>:<command>`; interactive autocomplete also offers the short form when it is unambiguous.
 
-- `check` is a dry run: prints a diff, writes nothing, exits 1 when violations exist.
-- `fix` rewrites files in place.
+- `check` is a dry run: lists the files that would change, writes nothing, exits 1 when violations exist. Add `-- --diff` to see the proposed changes themselves.
+- `fix` rewrites files in place. Through the slash command a successful `fix` prints nothing — that keeps it free of an agent's context; use `git diff` to inspect the result. The runner itself still prints its summary when you run it from a shell.
 - With no path the scope is the git working set of the current repository: modified, staged, and untracked `.php` files. Pass a directory (for example `.`) to cover everything. Explicit paths must lie under the project root (the git top-level, or the current directory outside git).
 - Anything after `--` is forwarded to php-cs-fixer unchanged, for example `-- --verbose` or `-- --allow-risky=yes`.
 
@@ -51,9 +51,11 @@ config: <which configuration applied>
 files_processed: <N>
 files_changed: <N>          # "would change" for check, "rewritten" for fix
 <one absolute path per affected file>
---- diff ---                # check only, and only when files_changed > 0
+--- diff ---                # only when you passed `-- --diff`, and files_changed > 0
 <unified diff>
 ```
+
+The changed-file list, not the diff, is the default output: a diff of every violation is by far the largest thing the runner can print, and an agent reader pays for it on every run. Ask for it with `-- --diff` when you actually want to read it.
 
 Exit status:
 

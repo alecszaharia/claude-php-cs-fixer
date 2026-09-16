@@ -24,11 +24,14 @@ installed for this purpose.
 
 1. Run `/php-cs-fixer:php-cs-fixer check [paths]` first. With no path it covers the git
    working set (modified, staged, untracked `.php` files); pass paths to
-   widen or narrow. Report the diff to the user.
+   widen or narrow. Report the counts and the changed-file list to the user.
 2. Run `/php-cs-fixer:php-cs-fixer fix [paths]` only when the user asked for rewrites or
-   approved the diff from step 1.
+   approved the file list from step 1. A successful `fix` prints nothing; say it
+   succeeded and leave inspection to `git diff`.
 3. Extra php-cs-fixer flags go after `--`, for example
-   `/php-cs-fixer:php-cs-fixer check src -- --verbose`.
+   `/php-cs-fixer:php-cs-fixer check src -- --verbose`. Add `-- --diff` only when
+   the user asks to see the proposed changes — the diff is large and the file
+   list usually answers the question.
 
 ## Do not
 
@@ -52,12 +55,15 @@ files_processed: 3
 files_changed: 1
 /abs/path/src/Foo.php
 --- diff ---
-<unified diff, check only>
+<unified diff, only when the caller passed `-- --diff`>
 ```
 
 - `config:` says which configuration applied; a project config always wins
   over the bundled default.
 - `files_changed:` means "would change" for `check` and "rewritten" for `fix`.
+- A successful `fix` prints no summary at all: the command discards its stdout
+  so a rewrite costs no context. Exit 0 is the whole result; `git diff` shows
+  what changed. Do not re-run as `check` just to produce a summary.
 - Exit 0: clean (or nothing to process). Exit 1: `check` found violations.
   Exit 2: tool or preflight error; the runner prints one cause line
   (Docker CLI missing, daemon unreachable, image pull failed, no scope, bad

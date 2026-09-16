@@ -1,6 +1,6 @@
 {
   "name": "php-cs-fixer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Run php-cs-fixer (check/fix) inside a pinned Docker image. No host PHP required.",
   "author": { "name": "alecszaharia" },
   "homepage": "https://github.com/alecszaharia/claude-php-cs-fixer",

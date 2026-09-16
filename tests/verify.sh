@@ -45,14 +45,21 @@ assert "plugin manifest present"                test -f "$plugin_root/.claude-pl
 out=$("$runner" check "$fixture" -- --using-cache=no 2>&1); rc=$?
 assert "check on fixture exits 1 (violations)"  test "$rc" -eq 1
 assert "check output lists the fixture path"    grep -qx "$fixture" <<<"$out"
-assert "exactly one --- diff --- delimiter"     test "$(grep -c '^--- diff ---$' <<<"$out")" -eq 1
-assert "diff section mentions the fixture"      grep -q "Sample.php" <(sed -n '/^--- diff ---$/,$p' <<<"$out")
+assert "check prints no diff by default"        bash -c '! grep -q "^--- diff ---$" <<<"$1"' _ "$out"
 assert "summary carries fixed labels"           grep -qE '^config: .+' <<<"$out"
 assert "files_processed label present"          grep -qE '^files_processed: [0-9]+$' <<<"$out"
 assert "files_changed label present"            grep -qE '^files_changed: [0-9]+$' <<<"$out"
 assert "fixture untouched by check"             test "$(sha "$fixture" | cut -d' ' -f1)" = "$fixture_sha_before"
-assert "long array syntax is flagged"           grep -q '^-.*array(' <<<"$out"
-assert "no declare(strict_types) added (non-risky)" bash -c '! grep -q "strict_types" <<<"$1"' _ "$out"
+
+# ---------------------------------------------------------------- runner R9: diff is opt-in via `-- --diff`
+dout=$("$runner" check "$fixture" -- --using-cache=no --diff 2>&1); rc=$?
+assert "check --diff still exits 1"             test "$rc" -eq 1
+assert "exactly one --- diff --- delimiter"     test "$(grep -c '^--- diff ---$' <<<"$dout")" -eq 1
+assert "diff section mentions the fixture"      grep -q "Sample.php" <(sed -n '/^--- diff ---$/,$p' <<<"$dout")
+assert "long array syntax is flagged"           grep -q '^-.*array(' <<<"$dout"
+assert "no declare(strict_types) added (non-risky)" bash -c '! grep -q "strict_types" <<<"$1"' _ "$dout"
+assert "default check is smaller than --diff"   test "${#out}" -lt "${#dout}"
+assert "fixture untouched by check --diff"      test "$(sha "$fixture" | cut -d' ' -f1)" = "$fixture_sha_before"
 
 # ---------------------------------------------------------------- plugin R7.3 / runner R6.1, R6.3: fix a disposable copy, then re-check clean
 (cd "$work" && "$runner" fix src/Sample.php >/dev/null 2>&1); rc=$?
