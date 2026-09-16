@@ -14,13 +14,14 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 ## Requirements
 
 ### R1: Containerized execution
-**Description:** php-cs-fixer runs inside a single pinned official php-cs-fixer container image (newest PHP tag available at release time). No host PHP, composer, or php-cs-fixer binary is required or used. The image tag is fixed, not floating.
+**Description:** php-cs-fixer runs inside the official php-cs-fixer container image. The php-cs-fixer release is pinned, not floating; the PHP component of the tag is resolved per run by R10, within the set of PHP versions the pinned release publishes. No host PHP, composer, or php-cs-fixer binary is required or used.
 
 **Acceptance Criteria:**
 - [ ] On a host with no `php`, `composer`, or `php-cs-fixer` on `PATH`, a fix run and a check run both complete and produce their normal results.
-- [ ] The container image reference used at runtime includes an explicit version tag; it is never `latest` and never unpinned.
-- [ ] Two consecutive runs with no intervening change to the runner resolve to the identical image reference.
-- [ ] The image reference appears in exactly one place in the runner, so a tag bump is a single-point change.
+- [ ] The container image reference used at runtime includes an explicit php-cs-fixer version tag; it is never `latest` and never unpinned.
+- [ ] Two consecutive runs on the same project, with no intervening change to the runner, resolve to the identical image reference.
+- [ ] The image reference appears in exactly one place in the runner, so a release bump is a single-point change.
+- [ ] Changing the resolved PHP version changes only the PHP component of the tag; the php-cs-fixer release is identical across every PHP version the runner can select.
 
 **Dependencies:** none (root requirement of this kit)
 
@@ -106,22 +107,40 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 **Dependencies:** R1, R7
 
 ### R9: Agent-friendly output
-**Description:** Every run that reaches php-cs-fixer (i.e. passes R8 preflight) emits a plain-text summary intended for an agent reader, with fixed field labels one per line: the applied configuration, the number of files processed, the number of files changed (fix) or violating (check), and the list of those files one path per line. The summary is the whole default output: the diff is the single largest thing the runner can print and an agent reader pays for it on every run, so it is emitted only when the caller asks for it by passing `--diff` through to php-cs-fixer, in which case it follows the summary after a fixed delimiter line so the two parts can be split mechanically. Preflight failures emit only their R8 one-line message, no summary. The empty-scope case of R7 (nothing to process) emits the same summary shape with zero counts and no file list.
+**Description:** Every run that reaches php-cs-fixer (i.e. passes R8 preflight) emits a plain-text summary intended for an agent reader, with fixed field labels one per line: the PHP version that applied and its source (R10), the applied configuration, the number of files processed, the number of files changed (fix) or violating (check), and the list of those files one path per line. The summary is the whole default output: the diff is the single largest thing the runner can print and an agent reader pays for it on every run, so it is emitted only when the caller asks for it by passing `--diff` through to php-cs-fixer, in which case it follows the summary after a fixed delimiter line so the two parts can be split mechanically. Preflight failures emit only their R8 one-line message, no summary. The empty-scope case of R7 (nothing to process) emits the same summary shape with zero counts and no file list.
 
 **Acceptance Criteria:**
 - [ ] Every run that reaches php-cs-fixer ends with a summary whose lines carry fixed labels and state the number of files processed and the number of files changed or violating.
 - [ ] The summary lists each changed (fix) or would-change (check) file by path, one per line.
-- [ ] The summary names the applied configuration as required by R4.
+- [ ] The summary names the applied configuration as required by R4, and the applied PHP version with its source as required by R10.
 - [ ] Without a caller-supplied `--diff`, no diff and no delimiter line appear in the output of either operation, however many files changed.
 - [ ] With a caller-supplied `--diff`, the diff of proposed changes is present, separated from the summary by a fixed delimiter line, so a reader can split the two without parsing the diff.
 - [ ] A run with zero violations produces a summary explicitly reporting zero, rather than empty output.
 
 **Dependencies:** R4, R6, R7, R8
 
+### R10: PHP version selection
+**Description:** php-cs-fixer parses with the PHP it runs on and executes the project's own `.php-cs-fixer.php` under that same PHP, so the runtime PHP version is part of the result, not an implementation detail. The version is resolved once per run from the project itself, with an explicit override available, and is always reported. Resolution order, first hit wins: an explicit caller request (flag, then environment variable); the exact platform PHP declared in `composer.json` at `P`; the lowest version admitted by the `php` constraint in `composer.json` at `P` (a declared floor is the contract the project's code must parse on); a `.php-version` file at `P`; the runner's pinned default. Only versions published for the pinned php-cs-fixer release (R1) can be selected. A *detected* version outside that set is clamped into it and the clamp is stated; an *explicitly requested* version outside it is refused rather than silently substituted.
+
+**Acceptance Criteria:**
+- [ ] With no project signal and no explicit request, the run uses the runner's pinned default PHP version.
+- [ ] An explicit caller request selects that PHP version; when both the flag and the environment variable are set, the flag wins.
+- [ ] With an exact platform PHP declared in `composer.json`, that version is used even when the file also declares a `php` constraint.
+- [ ] With only a `php` constraint in `composer.json`, the version used is the lowest the constraint admits, taken from its major and minor components only (a patch component in the constraint never lowers the result), including across alternatives (`^7.4|^8.0` selects 7.4) and ranges (`>=8.4 <9.0` selects 8.4).
+- [ ] A `php` key at any other path in `composer.json` (for example under `require-dev`) does not drive selection.
+- [ ] With no usable `composer.json` signal, a `.php-version` file at `P` is used; when both exist, `composer.json` wins.
+- [ ] A detected version below the oldest published PHP, or above the newest, is clamped into the published set, and the run states both what was detected and what it was clamped to.
+- [ ] An explicitly requested version that is not published, or is not a version at all, produces a preflight tool error (R8 class) naming the requested value, starts no container, and is never clamped to a different version.
+- [ ] Every run that reaches php-cs-fixer reports the PHP version that applied and where it came from (R9).
+- [ ] A run under a resolved non-default PHP version performs the normal operations end to end, including file ownership (R3).
+
+**Dependencies:** R1, R2, R8, R9
+
 ## Out of Scope
 - Windows support.
 - Claude Code hooks or any automatic/on-save triggering.
-- PHP version detection or per-project PHP version selection.
+- Installing or managing PHP versions on the host; selection is limited to the PHP versions the pinned php-cs-fixer release already publishes.
+- Parsing `composer.lock`, or resolving a constraint against the set of PHP releases that actually exist (the runner reads the declared floor, it does not do version-range solving).
 - A custom Dockerfile or self-built image.
 - CI pipeline wiring.
 - Scaffolding or generating php-cs-fixer configuration files into projects.
@@ -132,6 +151,7 @@ The runner is usable standalone from a plain shell — no Claude Code, no plugin
 - See also: `cavekit-overview.md`.
 
 ## Changelog
+- 2026-09-16: R10 added — per-project PHP version selection, previously listed Out of Scope. Motive: the runtime PHP both parses the sources and executes the project's `.php-cs-fixer.php`, so a single pinned PHP made the fixer's behaviour depend on the runner's release date rather than on the project. R1 was narrowed to pin the php-cs-fixer release only, and R9 gained the `php:` line.
 - 2026-09-16: R6/R9 — `check` reports the changed-file list instead of a diff; the diff became opt-in via a caller-supplied `--diff`. Motive: the diff dominated the output an agent reader pays for on every run.
 - 2026-09-15: Review fixes — defined project root `P` once (R2) and referenced it from R4/R6/R7/R8; unified R7 no-git-no-path error with R8 "no scope" cause; added out-of-root path rejection; fixed R9 output shape (plain text, fixed labels, delimiter before diff); made cache criterion observable.
 - 2026-09-15: Initial draft from `context/refs/design-brief.md` (approved 2026-09-15).

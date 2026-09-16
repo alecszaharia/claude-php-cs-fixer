@@ -39,12 +39,18 @@ Contract of the runner (for your understanding, not for rewriting its output):
   `.php` files) of the current repository, excluding unmerged files. Explicit
   paths must lie under the project root.
 - Everything after `--` is forwarded to php-cs-fixer unchanged.
-- Output: `config:`, `files_processed:`, `files_changed:` lines, then one
+- `--php X.Y` selects the PHP version php-cs-fixer runs on and goes before `--`
+  (it picks the container, so php-cs-fixer never sees it). Without it the
+  version comes from the project: `composer.json` `config.platform.php`, else
+  the floor of `composer.json` `require.php`, else `.php-version`, else the
+  pinned default. Pass it only when the user asked for a specific version.
+- Output: `php:`, `config:`, `files_processed:`, `files_changed:` lines, then one
   absolute path per affected file. No diff is printed unless the user passed
   `-- --diff`, which appends a `--- diff ---` line followed by the unified diff.
 - Exit status: 0 ok, 1 violations found, 2 tool or preflight error (git missing,
   Docker missing, daemon unreachable, image pull failed, no scope, invalid path,
-  or a php-cs-fixer failure whose own output is shown verbatim).
+  an unpublished or malformed `--php` value, or a php-cs-fixer failure whose own
+  output is shown verbatim).
 
 Rules:
 

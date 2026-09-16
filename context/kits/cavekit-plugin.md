@@ -72,13 +72,13 @@ Execution behaviour itself is defined in cavekit-runner.md and is not restated h
 **Dependencies:** runner R8
 
 ### R6: Versioning
-**Description:** The plugin declares its version. The pinned container image tag is part of the plugin's released contract: bumping the image tag requires a plugin version bump.
+**Description:** The plugin declares its version. The pinned php-cs-fixer release, and the default PHP version applied when a project declares none, are part of the plugin's released contract: changing either requires a plugin version bump. The PHP version a given run resolves to (runner R10) is a property of the project, not of the release, and is not covered by this requirement.
 
 **Acceptance Criteria:**
 - [ ] The installed plugin reports a version, and it is visible to the user after install.
-- [ ] Each released version corresponds to exactly one pinned image tag (runner R1).
-- [ ] A change to the pinned image tag is accompanied by a version increase in the same change; a repo-local assertion (part of the R7 verification script, not a CI pipeline) fails if the tag recorded for the current version differs from the tag in use.
-- [ ] The repository documents the release step of bumping version together with the image tag.
+- [ ] Each released version corresponds to exactly one default image reference: the pinned php-cs-fixer release plus the default PHP version (runner R1, R10).
+- [ ] A change to that default image reference is accompanied by a version increase in the same change; a repo-local assertion (part of the R7 verification script, not a CI pipeline) fails if the reference recorded for the current version differs from the one a run with no project PHP signal resolves to.
+- [ ] The repository documents the release step of bumping version together with the pinned release and default PHP version.
 
 **Dependencies:** runner R1
 

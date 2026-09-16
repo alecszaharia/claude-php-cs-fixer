@@ -15,13 +15,14 @@ EXIT_TOOL_ERROR=2
 
 # The ONLY place the image reference lives. Bumping it is a plugin release:
 # update CHANGELOG.md "VERSION-IMAGE mapping" and .claude-plugin/plugin.json.
-IMAGE="ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25-php8.5"
-# Self-test hook: tests/verify.sh provokes a pull failure by overriding the image.
-# Honoured only when PHPCSFIXER_SELFTEST=1 is also set, and always announced.
-if [ "${PHPCSFIXER_SELFTEST:-}" = "1" ] && [ -n "${PHPCSFIXER_IMAGE_OVERRIDE:-}" ]; then
-    IMAGE="$PHPCSFIXER_IMAGE_OVERRIDE"
-    printf 'warning: self-test image override active: %s\n' "$IMAGE" >&2
-fi
+#
+# The php-cs-fixer release is pinned; only the PHP suffix is resolved per run
+# (see resolve_php_version). Upstream publishes this release for every PHP in
+# PHP_SUPPORTED, so swapping the suffix never changes the fixer's own version.
+IMAGE_BASE="ghcr.io/php-cs-fixer/php-cs-fixer:3.95.25"
+PHP_SUPPORTED="7.4 8.0 8.1 8.2 8.3 8.4 8.5"
+PHP_DEFAULT="8.5"
+IMAGE=""   # IMAGE_BASE-php<resolved>, set by resolve_image
 
 # Builtins only (no dirname): must work before PATH is validated by preflight.
 _self="${BASH_SOURCE[0]}"
@@ -46,7 +47,7 @@ DIFF_DELIMITER="--- diff ---"
 # ---------------------------------------------------------------- helpers
 usage() {
     cat >&2 <<'USAGE'
-Usage: php-cs-fixer-docker <check|fix> [paths...] [-- extra php-cs-fixer flags]
+Usage: php-cs-fixer-docker <check|fix> [--php X.Y] [paths...] [-- extra php-cs-fixer flags]
 
   check   dry-run: list the files that would change, write nothing (exit 1 if any)
   fix     rewrite files in place
@@ -54,6 +55,11 @@ Usage: php-cs-fixer-docker <check|fix> [paths...] [-- extra php-cs-fixer flags]
 Paths default to the git working set (modified, staged, untracked .php files).
 Anything after `--` is forwarded to php-cs-fixer verbatim; pass `-- --diff` to
 append the unified diff after the summary.
+
+--php (or PHPCSFIXER_PHP) picks the PHP the fixer runs on. Without it the
+version is read from the project: composer.json config.platform.php, else the
+floor of composer.json require.php, else .php-version, else the pinned default.
+The php: line of every run says which version applied and where it came from.
 USAGE
 }
 
@@ -98,6 +104,157 @@ abs_path() {
         local dir base
         dir=$(dirname -- "$p"); base=$(basename -- "$p")
         (cd -- "$dir" && printf '%s/%s\n' "$(pwd -P)" "$base")
+    fi
+}
+
+# ---------------------------------------------------------------- PHP version resolution (runner R10)
+# php-cs-fixer parses with the PHP it runs on and executes the project's own
+# .php-cs-fixer.php under it, so the runtime PHP is part of the result. The
+# project decides it; the pinned default applies only when nothing says otherwise.
+
+# Read one string value at a dotted path out of JSON, without jq or php.
+# Paths are anchored from the root, so "require.php" never matches
+# "require-dev.php" or "extra.require.php". Array elements are not addressable
+# (no composer field we read lives in one).
+json_string_at() { # json_string_at <file> <dotted.path>
+    awk -v want="$2" '
+        { s = s $0 "\n" }
+        END {
+            n = length(s); i = 1; depth = 0
+            while (i <= n) {
+                c = substr(s, i, 1)
+                if (c == "\"") {
+                    j = i + 1; str = ""
+                    while (j <= n) {
+                        ch = substr(s, j, 1)
+                        if (ch == "\\") { str = str substr(s, j + 1, 1); j += 2; continue }
+                        if (ch == "\"") break
+                        str = str ch; j++
+                    }
+                    i = j + 1
+                    k = i
+                    while (k <= n && substr(s, k, 1) ~ /[ \t\r\n]/) k++
+                    if (substr(s, k, 1) == ":") { key[depth] = str; i = k + 1; continue }
+                    path = ""
+                    for (d = 1; d <= depth; d++) path = (path == "" ? key[d] : path "." key[d])
+                    if (path == want) { print str; exit }
+                    continue
+                }
+                if (c == "{" || c == "[") { depth++; key[depth] = ""; i++; continue }
+                if (c == "}" || c == "]") { depth--; i++; continue }
+                i++
+            }
+        }' "$1" 2>/dev/null
+}
+
+# "8.1.7" -> 8.1, "8" -> 8.0. Empty when the string holds no version at all.
+php_minor_of() {
+    awk -v s="$1" 'BEGIN {
+        if (!match(s, /[0-9]+(\.[0-9]+)*/)) exit
+        v = substr(s, RSTART, RLENGTH)
+        split(v, p, ".")
+        printf "%d.%d\n", p[1], (p[2] == "" ? 0 : p[2])
+    }'
+}
+
+# Lowest version a composer constraint admits: "^8.1" -> 8.1, "^7.4|^8.0" -> 7.4,
+# ">=8.1 <9.0" -> 8.1. The declared floor is the contract the code must parse on.
+php_minor_floor_of() {
+    awk -v s="$1" 'BEGIN {
+        best = ""
+        while (match(s, /[0-9]+(\.[0-9]+)*/)) {
+            v = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+            split(v, p, ".")
+            key = p[1] * 1000 + (p[2] == "" ? 0 : p[2])
+            if (best == "" || key < best) { best = key; bestv = sprintf("%d.%d", p[1], (p[2] == "" ? 0 : p[2])) }
+        }
+        if (best != "") print bestv
+    }'
+}
+
+php_is_supported() {
+    case " $PHP_SUPPORTED " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# Detected versions are clamped into the published range rather than failing a
+# pull later: below the oldest tag -> oldest, above the newest -> newest,
+# otherwise the next tag up. An explicitly requested version is never clamped
+# (see resolve_php_version) — silently running something other than what the
+# caller asked for would be worse than an error.
+php_clamp() {
+    awk -v want="$1" -v list="$PHP_SUPPORTED" 'BEGIN {
+        n = split(list, a, " ")
+        split(want, w, "."); wk = w[1] * 1000 + w[2]
+        best = ""
+        for (i = 1; i <= n; i++) {
+            split(a[i], c, "."); ck = c[1] * 1000 + c[2]
+            if (i == 1 || ck < mink) { mink = ck; minv = a[i] }
+            if (i == 1 || ck > maxk) { maxk = ck; maxv = a[i] }
+            if (ck >= wk && (best == "" || ck < bestk)) { bestk = ck; best = a[i] }
+        }
+        print (wk < mink ? minv : (wk > maxk ? maxv : best))
+    }'
+}
+
+PHP_VERSION=""
+PHP_SOURCE=""
+resolve_php_version() {
+    local raw="" source="" detected=""
+
+    # Explicit request wins and is honoured exactly or not at all.
+    if [ -n "$PHP_FLAG" ]; then
+        raw=$PHP_FLAG; source="--php"
+    elif [ -n "${PHPCSFIXER_PHP:-}" ]; then
+        raw=$PHPCSFIXER_PHP; source="PHPCSFIXER_PHP"
+    fi
+    if [ -n "$raw" ]; then
+        detected=$(php_minor_of "$raw")
+        [ -n "$detected" ] || die "not a PHP version: $source=$raw (expected MAJOR.MINOR, e.g. 8.2)"
+        php_is_supported "$detected" \
+            || die "no published image for PHP $detected ($source=$raw); available: $PHP_SUPPORTED"
+        PHP_VERSION=$detected; PHP_SOURCE=$source
+        return
+    fi
+
+    # Project signals, strongest first: the exact platform composer resolves
+    # against, then the declared floor of the php constraint, then .php-version.
+    if [ -f "$P/composer.json" ]; then
+        raw=$(json_string_at "$P/composer.json" config.platform.php)
+        if [ -n "$raw" ]; then
+            detected=$(php_minor_of "$raw"); source="composer.json config.platform.php"
+        else
+            raw=$(json_string_at "$P/composer.json" require.php)
+            if [ -n "$raw" ]; then
+                detected=$(php_minor_floor_of "$raw"); source="composer.json require.php"
+            fi
+        fi
+    fi
+    if [ -z "$detected" ] && [ -f "$P/.php-version" ]; then
+        IFS= read -r raw < "$P/.php-version" || raw=""
+        if [ -n "$raw" ]; then
+            detected=$(php_minor_of "$raw"); source=".php-version"
+        fi
+    fi
+    if [ -z "$detected" ]; then
+        PHP_VERSION=$PHP_DEFAULT; PHP_SOURCE="pinned default"
+        return
+    fi
+
+    PHP_VERSION=$(php_clamp "$detected")
+    if [ "$PHP_VERSION" = "$detected" ]; then
+        PHP_SOURCE="$source: $raw"
+    else
+        PHP_SOURCE="$source: $raw -> $detected clamped to $PHP_VERSION, the nearest published tag"
+    fi
+}
+
+resolve_image() {
+    IMAGE="$IMAGE_BASE-php$PHP_VERSION"
+    # Self-test hook: tests/verify.sh provokes a pull failure by overriding the image.
+    # Honoured only when PHPCSFIXER_SELFTEST=1 is also set, and always announced.
+    if [ "${PHPCSFIXER_SELFTEST:-}" = "1" ] && [ -n "${PHPCSFIXER_IMAGE_OVERRIDE:-}" ]; then
+        IMAGE="$PHPCSFIXER_IMAGE_OVERRIDE"
+        printf 'warning: self-test image override active: %s\n' "$IMAGE" >&2
     fi
 }
 
@@ -226,6 +383,7 @@ resolve_diff_mode() {
 #   "---------- begin diff ----------" ... "----------- end diff -----------"
 print_summary() {
     local out=$1
+    printf 'php: %s (%s)\n' "$PHP_VERSION" "$PHP_SOURCE"
     printf 'config: %s\n' "$CONFIG_LABEL"
     awk -v P="$P" -v want_diff="$WANT_DIFF" -v delim="$DIFF_DELIMITER" '
         /begin diff -+$/ { indiff = 1; next }
@@ -278,6 +436,7 @@ run_operation() {
 OPERATION=""
 PATHS=()
 PASSTHROUGH=()
+PHP_FLAG=""
 
 parse_args() {
     if [ $# -eq 0 ]; then
@@ -291,13 +450,27 @@ parse_args() {
     esac
     shift
     while [ $# -gt 0 ]; do
-        if [ "$1" = "--" ]; then
-            shift
-            PASSTHROUGH=("$@")
-            break
-        fi
+        case "$1" in
+            --)
+                shift
+                PASSTHROUGH=("$@")
+                break ;;
+            --php=*)
+                PHP_FLAG=${1#--php=}; shift; continue ;;
+            --php)
+                [ $# -ge 2 ] || die "--php needs a version, e.g. --php 8.2"
+                PHP_FLAG=$2; shift 2; continue ;;
+        esac
         PATHS+=("$1")
         shift
+    done
+    # --php selects the container, so php-cs-fixer never sees it: after `--` it
+    # would reach php-cs-fixer as an unknown option instead of doing anything.
+    local a
+    for a in "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"; do
+        case "$a" in
+            --php|--php=*) die "--php selects the PHP version and belongs before '--', not after it" ;;
+        esac
     done
 }
 
@@ -305,9 +478,12 @@ parse_args() {
 main() {
     parse_args "$@"
     resolve_project_root
+    resolve_php_version
+    resolve_image
 
     if [ "${PHPCSFIXER_DEBUG_ARGS:-}" = "1" ]; then
-        printf 'operation=%s\nP=%s\nin_git=%s\nimage=%s\n' "$OPERATION" "$P" "$IN_GIT_REPO" "$IMAGE"
+        printf 'operation=%s\nP=%s\nin_git=%s\nimage=%s\nphp=%s\nphp_source=%s\n' \
+            "$OPERATION" "$P" "$IN_GIT_REPO" "$IMAGE" "$PHP_VERSION" "$PHP_SOURCE"
         printf 'path=%s\n' "${PATHS[@]+"${PATHS[@]}"}"
         printf 'passthrough=%s\n' "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"
         exit "$EXIT_OK"

@@ -46,11 +46,17 @@ installed for this purpose.
 - Do not reformat, summarize, or reorder the runner's output. Show it as is.
 - Do not pass `--allow-risky=yes` unless the user explicitly asked for risky
   fixers.
+- Do not pass `--php` to work around a failure. The version is read from the
+  project; overriding it hides a mismatch between the project's declared PHP and
+  its code. Pass it only when the user names a version.
+- Do not edit `composer.json` or `.php-version` to change which PHP the fixer
+  uses. Those describe the project, not this tool.
 - Do not run `fix` on files outside the user's current change without asking.
 
 ## Interpreting output
 
 ```
+php: 8.2 (composer.json config.platform.php: 8.2.5)   # or: pinned default
 config: project (/abs/path/.php-cs-fixer.dist.php)   # or: bundled default (@Symfony, non-risky, short arrays)
 files_processed: 3
 files_changed: 1
@@ -59,6 +65,9 @@ files_changed: 1
 <unified diff, only when the caller passed `-- --diff`>
 ```
 
+- `php:` says which PHP php-cs-fixer ran on and where that came from. It is read
+  from the project (`composer.json`, then `.php-version`), so it usually needs
+  no attention; report it as given rather than acting on it.
 - `config:` says which configuration applied; a project config always wins
   over the bundled default.
 - `files_changed:` means "would change" for `check` and "rewritten" for `fix`.

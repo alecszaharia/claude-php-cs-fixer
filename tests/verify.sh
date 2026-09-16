@@ -49,6 +49,7 @@ assert "check on fixture exits 1 (violations)"  test "$rc" -eq 1
 assert "check output lists the fixture path"    grep -qx "$fixture" <<<"$out"
 assert "check prints no diff by default"        bash -c '! grep -q "^--- diff ---$" <<<"$1"' _ "$out"
 assert "summary carries fixed labels"           grep -qE '^config: .+' <<<"$out"
+assert "summary names the PHP version + source" grep -qE '^php: [0-9]+\.[0-9]+ \(.+\)$' <<<"$out"
 assert "files_processed label present"          grep -qE '^files_processed: [0-9]+$' <<<"$out"
 assert "files_changed label present"            grep -qE '^files_changed: [0-9]+$' <<<"$out"
 assert "fixture untouched by check"             test "$(sha "$fixture" | cut -d' ' -f1)" = "$fixture_sha_before"
@@ -114,6 +115,80 @@ assert "CHANGELOG maps current version to an image" test -n "$mapped"
 assert "mapped image equals runner image"       test "$mapped" = "$img1"
 mkt_version=$(json_field "$plugin_root/.claude-plugin/marketplace.json" plugins.0.version)
 assert "marketplace version matches plugin.json" test "$mkt_version" = "$version"
+
+# ---------------------------------------------------------------- runner R10: PHP version resolution
+# Detection is asserted through PHPCSFIXER_DEBUG_ARGS, which resolves the image
+# and exits before any container starts, so this whole block costs no pull.
+phpdir=$(tmpd); git init -q "$phpdir"
+php_dbg() { (cd "$phpdir" && PHPCSFIXER_DEBUG_ARGS=1 "$runner" check "$@" 2>/dev/null); }
+php_of()  { php_dbg "$@" | sed -n 's/^php=//p'; }
+src_of()  { php_dbg "$@" | sed -n 's/^php_source=//p'; }
+img_of()  { php_dbg "$@" | sed -n 's/^image=//p'; }
+composer_json() { printf '%s\n' "$1" > "$phpdir/composer.json"; }
+
+default_php=$(php_of)
+assert "no project signal uses the pinned default" test "$(src_of)" = "pinned default"
+assert "default image is the mapped image"      test "$(img_of)" = "$mapped"
+assert "mapped image carries the default PHP"   test "$mapped" = "${mapped%-php*}-php$default_php"
+
+# The fixer release is pinned; only the PHP suffix moves.
+assert "--php changes only the PHP suffix"      test "$(img_of --php=8.1)" = "${mapped%-php*}-php8.1"
+assert "--php=X.Y is honoured"                  test "$(php_of --php=8.1)" = "8.1"
+assert "--php X.Y (space form) is honoured"     test "$(php_of --php 8.4)" = "8.4"
+assert "PHPCSFIXER_PHP is honoured" \
+    test "$(cd "$phpdir" && PHPCSFIXER_DEBUG_ARGS=1 PHPCSFIXER_PHP=8.2 "$runner" check 2>/dev/null | sed -n 's/^php=//p')" = "8.2"
+assert "--php beats PHPCSFIXER_PHP" \
+    test "$(cd "$phpdir" && PHPCSFIXER_DEBUG_ARGS=1 PHPCSFIXER_PHP=8.2 "$runner" check --php=8.3 2>/dev/null | sed -n 's/^php=//p')" = "8.3"
+
+composer_json '{"require":{"php":"^8.1"},"config":{"platform":{"php":"8.3.6"}}}'
+assert "config.platform.php beats require.php"  test "$(php_of)" = "8.3"
+composer_json '{"require":{"php":"^8.1"}}'
+assert "require.php takes the declared floor"   test "$(php_of)" = "8.1"
+assert "require.php source is named"            grep -q '^composer.json require.php: ' <<<"$(src_of)"
+composer_json '{"require":{"php":"~8.2.9"}}'
+assert "patch component never wins the floor"   test "$(php_of)" = "8.2"
+composer_json '{"require":{"php":">=8.4 <9.0"}}'
+assert "range constraint takes the lower bound" test "$(php_of)" = "8.4"
+composer_json '{"require-dev":{"php":"^8.0"}}'
+assert "require-dev.php is not require.php"     test "$(src_of)" = "pinned default"
+composer_json '{"require":{"php":"^7.2"}}'
+assert "below the oldest tag clamps up"         test "$(php_of)" = "7.4"
+assert "clamping is stated, not silent"         grep -q 'clamped to 7.4' <<<"$(src_of)"
+composer_json '{"require":{"php":"^9.0"}}'
+assert "above the newest tag clamps down"       test "$(php_of)" = "$default_php"
+rm -f "$phpdir/composer.json"
+printf '8.2.10\n' > "$phpdir/.php-version"
+assert ".php-version applies when composer absent" test "$(php_of)" = "8.2"
+composer_json '{"require":{"php":"^8.4"}}'
+assert "composer.json beats .php-version"       test "$(php_of)" = "8.4"
+rm -f "$phpdir/composer.json" "$phpdir/.php-version"
+
+# An explicit request is honoured exactly or refused: never silently clamped.
+m_php_range=$(cd "$phpdir" && "$runner" check --php=9.9 2>&1);  rc_php_range=$?
+m_php_junk=$(cd "$phpdir" && "$runner" check --php=abc 2>&1);   rc_php_junk=$?
+m_php_late=$(cd "$phpdir" && "$runner" check -- --php=8.1 2>&1); rc_php_late=$?
+assert "unpublished explicit version exits 2"   test "$rc_php_range" -eq 2
+assert "unpublished version is not clamped"     grep -q 'no published image for PHP 9.9' <<<"$m_php_range"
+assert "unpublished version lists what exists"  grep -q '8.5' <<<"$m_php_range"
+assert "malformed explicit version exits 2"     test "$rc_php_junk" -eq 2
+assert "--php after -- is refused, not forwarded" bash -c '[ "$1" -eq 2 ] && grep -q "belongs before" <<<"$2"' _ "$rc_php_late" "$m_php_late"
+assert "three --php errors are distinct, one line each" \
+    bash -c 'printf "%s\n" "$@" | sort -u | wc -l | grep -qx 3' _ "$m_php_range" "$m_php_junk" "$m_php_late"
+
+# The one assertion that costs a pull: a non-default suffix must be a real,
+# working image, not just a well-formed string.
+mkdir -p "$phpdir/src"; cp "$fixture" "$phpdir/src/Sample.php"
+composer_json '{"require":{"php":"^8.1"}}'
+out=$(cd "$phpdir" && "$runner" check src/Sample.php 2>&1); rc=$?
+assert "autodetected non-default PHP really runs" test "$rc" -eq 1
+assert "run reports the autodetected version"   grep -qx 'php: 8.1 (composer.json require.php: ^8.1)' <<<"$out"
+assert "autodetected run still finds violations" grep -qx 'files_changed: 1' <<<"$out"
+(cd "$phpdir" && "$runner" fix src/Sample.php >/dev/null 2>&1); rc=$?
+assert "fix under a non-default PHP exits 0"    test "$rc" -eq 0
+if [ "$(uname -s)" = Linux ]; then
+    assert "non-default PHP keeps invoker ownership" test "$(stat -c '%u:%g' "$phpdir/src/Sample.php")" = "$(id -u):$(id -g)"
+fi
+rm -rf "$phpdir"
 
 # ---------------------------------------------------------------- plugin R4.3: no run-time fetching (inspection)
 assert "no network-fetch instructions in runner/command/skill" \

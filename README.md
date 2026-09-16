@@ -1,6 +1,6 @@
 # claude-php-cs-fixer
 
-[php-cs-fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer) as a Claude Code plugin. php-cs-fixer runs inside a pinned Docker image, so the host needs **no PHP, no composer, no php-cs-fixer**. Works on Linux and macOS (Docker Desktop or OrbStack). Windows is out of scope.
+[php-cs-fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer) as a Claude Code plugin. php-cs-fixer runs inside a Docker image at a pinned php-cs-fixer release, on the PHP version your project declares, so the host needs **no PHP, no composer, no php-cs-fixer**. Works on Linux and macOS (Docker Desktop or OrbStack). Windows is out of scope.
 
 The plugin provides one slash command, `/php-cs-fixer:php-cs-fixer`, and a skill that tells Claude when to use it. It never runs automatically: no hooks, no on-save formatting.
 
@@ -24,8 +24,8 @@ From a terminal the same two steps are `claude plugin marketplace add alecszahar
 ## Usage
 
 ```
-/php-cs-fixer:php-cs-fixer check [paths...] [-- php-cs-fixer flags]
-/php-cs-fixer:php-cs-fixer fix   [paths...] [-- php-cs-fixer flags]
+/php-cs-fixer:php-cs-fixer check [--php X.Y] [paths...] [-- php-cs-fixer flags]
+/php-cs-fixer:php-cs-fixer fix   [--php X.Y] [paths...] [-- php-cs-fixer flags]
 ```
 
 Plugin commands are namespaced as `/<plugin>:<command>`; interactive autocomplete also offers the short form when it is unambiguous.
@@ -34,6 +34,7 @@ Plugin commands are namespaced as `/<plugin>:<command>`; interactive autocomplet
 - `fix` rewrites files in place. Through the slash command a successful `fix` prints nothing — that keeps it free of an agent's context; use `git diff` to inspect the result. The runner itself still prints its summary when you run it from a shell.
 - With no path the scope is the git working set of the current repository: modified, staged, and untracked `.php` files. Unmerged (conflicted) files are excluded — conflict markers are not parseable PHP. Pass a directory (for example `.`) to cover everything. Explicit paths must lie under the project root (the git top-level, or the current directory outside git).
 - Anything after `--` is forwarded to php-cs-fixer unchanged, for example `-- --verbose` or `-- --allow-risky=yes`.
+- `--php X.Y` (or `--php=X.Y`) picks the PHP version php-cs-fixer runs on; without it the version is read from the project. It selects the container, so it belongs *before* `--`, not after. See [PHP version](#php-version).
 
 The runner is a plain shell script and works without Claude:
 
@@ -47,6 +48,7 @@ bin/php-cs-fixer-docker fix -- --verbose
 Every run that reaches php-cs-fixer prints:
 
 ```
+php: <version> (<where it came from>)
 config: <which configuration applied>
 files_processed: <N>
 files_changed: <N>          # "would change" for check, "rewritten" for fix
@@ -77,22 +79,49 @@ Project configs are loaded by php-cs-fixer itself, so `__DIR__`, `require __DIR_
 
 The project root is mounted at the same absolute path inside the container and used as the working directory; `.php-cs-fixer.cache` is written there. On Linux the container runs as the invoking user, so files keep their ownership.
 
+## PHP version
+
+php-cs-fixer parses your sources with the PHP it runs on, and it executes your `.php-cs-fixer.php` under that same PHP. So the runtime PHP version is part of the result: a config or custom fixer that trips over a deprecation on PHP 8.5 behaves differently from one running on 8.1. The runner therefore takes the PHP version from the project, and only falls back to its own default when the project says nothing.
+
+Resolution order, first hit wins:
+
+| # | Source | Example | Selected |
+|--:|---|---|---|
+| 1 | `--php X.Y` | `--php 8.2` | 8.2 |
+| 2 | `PHPCSFIXER_PHP` | `PHPCSFIXER_PHP=8.2` | 8.2 |
+| 3 | `composer.json` → `config.platform.php` | `"8.3.6"` | 8.3 |
+| 4 | `composer.json` → `require.php` | `"^8.1"` | 8.1 |
+| 5 | `.php-version` | `8.2.10` | 8.2 |
+| 6 | the pinned default | — | 8.5 |
+
+A `require.php` constraint is read as a **floor**: the lowest version it admits (`^7.4|^8.0` → 7.4, `>=8.4 <9.0` → 8.4). The reasoning is that a project's declared minimum is the version its code must actually parse on — if a file needs syntax newer than the constraint claims, that is worth finding out. Set `config.platform.php`, or pass `--php`, when you want the exact version instead. Only `require.php` is read, never `require-dev.php`.
+
+The php-cs-fixer release itself is pinned; only the PHP part of the image tag moves, so every selectable version runs the identical fixer. Available: **7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5**. A *detected* version outside that range is clamped into it and the `php:` line says so:
+
+```
+php: 7.4 (composer.json require.php: ^7.2 -> 7.2 clamped to 7.4, the nearest published tag)
+```
+
+A version you asked for *explicitly* is never substituted — `--php=9.9` is a tool error listing what exists, because quietly formatting your code with something other than what you requested is worse than failing. Each distinct PHP version is a separate image, pulled once on first use.
+
+If a project's declared version turns out to be wrong for formatting, `--php` overrides it for that run without touching the project's files.
+
 ## Verification
 
 ```
 bash tests/verify.sh
 ```
 
-Runs `check` and `fix` against `tests/fixture/Sample.php` (on a disposable copy), and asserts ownership, config precedence, cache reuse, preflight messages, offline operation, and the version-to-image mapping. Exits 0 only when every assertion passes. Run it after installing on a new machine.
+Runs `check` and `fix` against `tests/fixture/Sample.php` (on a disposable copy), and asserts ownership, config precedence, PHP version resolution, cache reuse, preflight messages, offline operation, and the version-to-image mapping. Exits 0 only when every assertion passes. Run it after installing on a new machine. It pulls two images: the default one and one non-default PHP, to prove a resolved version is a real image and not just a well-formed tag.
 
 ## Release procedure
 
-The pinned image tag is part of the released contract. An image tag change without a plugin version bump is not a valid release.
+The pinned php-cs-fixer release and the default PHP version are part of the released contract. Changing either without a plugin version bump is not a valid release. Which PHP a given run resolves to is a property of the project, not of the release.
 
 1. Bump `version` in `.claude-plugin/plugin.json` **and** `.claude-plugin/marketplace.json`.
-2. Bump the `IMAGE` constant in `bin/php-cs-fixer-docker` (the only place it lives).
-3. Add `- <version>: <image>` to the `## VERSION-IMAGE mapping` block in `CHANGELOG.md` and write the release entry.
-4. Run `bash tests/verify.sh`; it fails if the mapped image for the current version differs from the runner's image.
+2. Bump `IMAGE_BASE` in `bin/php-cs-fixer-docker` (the only place the image lives). Adjust `PHP_SUPPORTED` and `PHP_DEFAULT` if the new release publishes a different set of PHP tags.
+3. Add `- <version>: <IMAGE_BASE>-php<PHP_DEFAULT>` to the `## VERSION-IMAGE mapping` block in `CHANGELOG.md` and write the release entry.
+4. Run `bash tests/verify.sh`; it fails if the mapped image for the current version differs from the image a run with no project PHP signal resolves to.
 5. Tag and push. Installed plugins pick the new version up on their next update.
 
 ## Layout
